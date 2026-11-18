@@ -95,6 +95,14 @@ Settings → **Import from Paymo** (admins only). Nothing is saved until you’v
    - The preview also shows warnings: running Paymo timers, entries with no duration, and unreadable rows.
 3. **Import.** It runs in one transaction. Records already in the app are matched and left alone, and only new ones are added, so you can import again later (for example a final top-up at cutover) without duplicates.
 
+The same import runs from a terminal, which suits a large first migration. It previews by default and writes only with `--commit`. The key comes from an environment variable, so it never lands in your shell history or the app:
+
+```bash
+PAYMO_API_KEY=your-key npm run import:paymo -- --from 2026-01-01 --to 2026-11-30 --as you@fifthcolor.com
+```
+
+Add `--commit` to import. Use `--csv file.csv` instead of a key for a CSV export. The other options are `--status draft`, `--extra-hours 4`, `--default-service Creative` and `--date-format dmy`.
+
 After an import:
 - Set account owners for new clients.
 - Set roles, departments and passwords for new people. Imported people can’t sign in until an admin sets a password.
