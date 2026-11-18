@@ -2,7 +2,7 @@
 import { Router } from 'express';
 import { one, many, query, tx } from '../db.js';
 import { h, bad, conflict, notFound, forbidden, uuidParam, str, isUUID } from '../http.js';
-import { createSession, destroySession, verifyPassword, hashPassword, requireUser, requireAdmin, throttleLogin, clearLoginThrottle, checkThrottle, recordFailure } from '../auth.js';
+import { createSession, destroySession, verifyPassword, hashPassword, requireUser, requireAdmin, throttleLogin, clearLoginThrottle, checkThrottle, recordFailure, slowDown } from '../auth.js';
 import { getSettings, isAdmin, isMgr, ROLES, stepScopeSql, ENTRY_JOINS, stopTimerRow } from '../domain.js';
 import { refreshAndCount } from './notifications.js';
 
@@ -19,7 +19,7 @@ r.post('/auth/login', h(async (req, res) => {
   const password = String(req.body.password || '');
   const key = `${req.ip}|${email}`, ipKey = `ip|${req.ip}`;
   checkThrottle(key);
-  checkThrottle(ipKey, 50); // also limits one password tried across many emails
+  await slowDown(ipKey); // one password tried across many emails slows to a crawl
   const u = await one('SELECT id, password_hash, archived_at FROM users WHERE lower(email) = $1', [email]);
   const okPw = await verifyPassword(password, u && u.password_hash ? u.password_hash : await DUMMY_HASH);
   if (!u || u.archived_at || !u.password_hash || !okPw) {
@@ -39,6 +39,8 @@ r.post('/auth/password', requireUser, h(async (req, res) => {
   if (!(await verifyPassword(current, u.password_hash))) throw bad('Your current password isn’t right.', { field: 'current' });
   if (next.length < 8) throw bad('Use at least 8 characters for the new password.', { field: 'next' });
   await query('UPDATE users SET password_hash = $1 WHERE id = $2', [await hashPassword(next), req.user.id]);
+  // Sign out everywhere else; this browser stays signed in.
+  await query('DELETE FROM sessions WHERE user_id = $1 AND token_hash <> $2', [req.user.id, req.sessionHash]);
   clearLoginThrottle(`pw|${req.user.id}`);
   res.json({ ok: true });
 }));
@@ -135,6 +137,8 @@ r.patch('/users/:id', requireAdmin, h(async (req, res) => {
     if (b.password) {
       if (String(b.password).length < 8) throw bad('Passwords need at least 8 characters.');
       set('password_hash', await hashPassword(String(b.password)));
+      // An admin resetting someone's password signs them out everywhere.
+      if (id !== req.user.id) await c.query('DELETE FROM sessions WHERE user_id = $1', [id]);
     }
     if (sets.length) { vals.push(id); await c.query(`UPDATE users SET ${sets.join(', ')} WHERE id = $${vals.length}`, vals); }
   });

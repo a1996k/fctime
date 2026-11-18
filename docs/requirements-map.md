@@ -122,7 +122,7 @@ Nobody is notified of their own action. Unread counts refresh every minute. Emai
 1. **Stack.** The repo was empty, so this is a new project: Node + Express + PostgreSQL, with a no-build single-page app that reuses the wireframe’s CSS, icons and component markup unchanged.
 2. **Workspace time zone** defaults to `America/Chicago` (the wireframe’s `paymo.tz`) and is admin-editable. “Today”, timer dates, Monday-start weeks and displayed timestamps use it. Changing it doesn’t move saved entries.
 3. **Timer entry date** is the day the timer *started* (the wireframe used the stop day). A timer that runs past 24 hours is saved as 24:00, with a warning to fix it. A running timer blocks submitting only the week it will land in.
-4. **Rounding** rounds the duration up; the start and end clock times stay as recorded (same as the wireframe). Editing an entry without changing its times keeps the rounded minutes.
+4. **Rounding** rounds the duration up; the start and end clock times stay as recorded (same as the wireframe), so a rounded timer entry counts more minutes than its clock span. Overlap checks and the calendar use the recorded span. Editing an entry without changing its times keeps the rounded minutes. Entries can't cross midnight in the form; split them into one entry per day.
 5. **Assignee is required** on tasks, because this brief lists it. The wireframe allowed “Unassigned.”
 6. **Setting up tasks is for admins and managers** (changed after review). In the wireframe anyone could add or edit tasks, which let staff sidestep the hours-request approval with a new high-budget task, and let anyone reroute or re-bill submitted time.
    - Admins and Managers/Account Executives create tasks and edit their details.
@@ -143,8 +143,8 @@ Nobody is notified of their own action. Unread counts refresh every minute. Emai
 12. **Board columns are fixed** to the wireframe defaults. Custom columns per project are in the backlog.
 13. **Setup is visible to everyone signed in:** all clients, projects and tasks, as in the wireframe. Only admins change people, service lines, clients, projects and settings.
 14. **Sign-in** is email and password, with server sessions in Postgres:
-    - Failed attempts are throttled per email and per network address.
+    - Failed attempts are blocked per email after 10. Many failures from one network address slow that address down but never block a correct password.
     - Unknown emails take as long to reject as wrong passwords.
-    - People change their own password.
+    - People change their own password, which signs out their other sessions.
     - SSO (Google Workspace) and password reset by email would be separate decisions.
 15. **Dates** can’t be logged more than a week ahead.

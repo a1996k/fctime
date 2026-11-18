@@ -47,3 +47,14 @@ const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', '
 export const shortDate = iso => { const [, m, d] = iso.split('-').map(Number); return `${MONTHS[m - 1]} ${d}`; };
 export const longDate = iso => { const [y, m, d] = iso.split('-').map(Number); return `${MONTHS[m - 1]} ${d}, ${y}`; };
 export const weekLabel = ws => `${shortDate(ws)} – ${longDate(addDays(ws, 6))}`;
+
+/**
+ * The clock span an entry occupies, in minutes after midnight: its recorded start and end, so timer
+ * rounding doesn't stretch it. When the end isn't after the start (a timer stopped in the same minute,
+ * or one that ran past midnight) it runs from the start for its minutes, capped at midnight.
+ * Overlap checks and the calendar both use this.
+ */
+export function entrySpan(start, end, minutes) {
+  const s = fromHM(start), e = end ? fromHM(end) : null;
+  return [s, e != null && e > s ? e : Math.min(1440, s + Math.max(1, minutes || 0))];
+}

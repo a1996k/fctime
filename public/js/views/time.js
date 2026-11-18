@@ -3,7 +3,7 @@ import { S, ui, api, me, isAdmin, user, userName, taskCtx, thisWeek, today, team
 import { esc, icon, btn, iconBtn, chip, statusChip, alertBox, field, inp, sel, textarea, seg, tabs, table, empty, dialog, avatar, cdot, swatch, dshort, dlabel, wlabel, hours, toast, alertPopup, ESTATUS, DOW, to12, stamp, selField, dayOf } from '../ui.js';
 import { views, actions, forms, modals, changes, inputs, pageHead, openModal, closeModal, refresh, render, renderModal, run, go, route, setQuery, overlapText, handleError } from '../core.js';
 import { openTasks } from './tasks.js';
-import { addDays, dow, weekStart, weekDays, hm, fromHM, toHM, parseDuration, isISODate } from '../shared/time.js';
+import { addDays, dow, weekStart, weekDays, hm, fromHM, toHM, parseDuration, isISODate, entrySpan } from '../shared/time.js';
 
 const editable = e => e.user_id === me().id && (e.status === 'draft' || e.status === 'rejected');
 const tab = () => route.parts[0] || 'mine';
@@ -15,7 +15,7 @@ views.time = {
     const t = tab(), ws = week();
     if (t === 'mine') ui.data.entries = await api(`/entries?user=${viewedUser().id}&from=${ws}&to=${addDays(ws, 6)}`);
     if (t === 'team') ui.data.team = await api(`/team?weekStart=${ws}`);
-    if (t === 'approvals') ui.data.approvals = await api('/approvals');
+    if (t === 'approvals') { ui.data.approvals = await api('/approvals'); ui.apprOff.clear(); }
     if (t === 'hours') ui.data.requests = await api('/hours-requests');
   },
   render() {
@@ -86,10 +86,11 @@ function calendarWeek(u, ws, es, own) {
   // 7 AM to 8 PM, stretched to fit any earlier or later entries this week.
   const timedAll = es.filter(e => e.start);
   const H0 = Math.min(7, ...timedAll.map(e => Math.floor(fromHM(e.start) / 60)));
-  const H1 = Math.max(20, ...timedAll.map(e => Math.min(24, Math.ceil(Math.min(1440, fromHM(e.start) + e.minutes) / 60))));
+  const H1 = Math.max(20, ...timedAll.map(e => Math.min(24, Math.ceil(entrySpan(e.start, e.end, e.minutes)[1] / 60))));
   const cols = weekDays(ws).map(d => {
     const de = es.filter(e => e.date === d), dm = de.reduce((s, e) => s + e.minutes, 0);
-    const timed = de.filter(e => e.start).map(e => ({ e, s: fromHM(e.start), m: e.minutes })), manual = de.filter(e => !e.start);
+    // Timed entries are drawn over their recorded clock span (the same span overlap checks use).
+    const timed = de.filter(e => e.start).map(e => { const [s, f] = entrySpan(e.start, e.end, e.minutes); return { e, s, m: f - s }; }), manual = de.filter(e => !e.start);
     const placed = [...timed]; let cursor = 9 * 60;
     manual.forEach(e => { while (placed.some(p => cursor < p.s + p.m && cursor + e.minutes > p.s)) cursor += 15; placed.push({ e, s: cursor, m: e.minutes }); cursor += e.minutes; });
     // Overlapping entries sit side by side in lanes so both stay visible and clickable.
@@ -138,6 +139,7 @@ document.addEventListener('pointerup', () => {
   const d = calDrag; if (!d) return; calDrag = null;
   let lo = Math.min(d.a, d.b), hi = Math.max(d.a, d.b);
   if (!d.moved) { lo = d.a; hi = Math.min(24 * 60 - 15, d.a + 60); }
+  hi = Math.min(hi, 24 * 60 - 1); lo = Math.min(lo, hi - 1); // a time field can't hold 24:00
   setTimeout(() => d.sel.remove(), 150);
   openEntry({ date: d.body.dataset.calDate, start: toHM(lo), end: toHM(hi), mode: 'range' });
 });

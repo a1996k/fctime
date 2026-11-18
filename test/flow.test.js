@@ -414,9 +414,12 @@ test('9. review fixes: people, sign-in and data hygiene', async () => {
   // bill rates are for managers and admins
   assert.equal(ok(await as.casey.get('/bootstrap')).serviceLines[0].rate, undefined);
   assert.ok(ok(await as.alex.get('/bootstrap')).serviceLines[0].rate !== undefined);
-  // people change their own password
+  // people change their own password, which signs them out everywhere else
+  const elsewhere = await new Client('casey-phone').login('casey@fifthcolor.example');
   assert.equal((await as.casey.post('/auth/password', { current: 'wrong', next: 'new-password-1' })).status, 400);
   ok(await as.casey.post('/auth/password', { current: PW, next: 'new-password-1' }));
+  assert.equal((await elsewhere.get('/bootstrap')).status, 401, 'other sessions end');
+  assert.equal((await as.casey.get('/bootstrap')).status, 200, 'this one stays');
   assert.equal((await new Client('c').req('POST', '/auth/login', { email: 'casey@fifthcolor.example', password: PW })).status, 400);
   await new Client('c2').login('casey@fifthcolor.example', 'new-password-1');
   // archiving someone saves their running timer instead of stranding it
@@ -425,6 +428,27 @@ test('9. review fixes: people, sign-in and data hygiene', async () => {
   assert.equal((await one('SELECT COUNT(*)::int AS n FROM timers WHERE user_id = $1', [ids.U.taylor])).n, 0);
   assert.ok(await one(`SELECT 1 FROM time_entries WHERE user_id = $1 AND source = 'timer' AND status = 'draft'`, [ids.U.taylor]));
   assert.equal((await as.taylor.get('/bootstrap')).status, 401, 'their sessions end');
+});
+
+test('10. re-check fixes: upload limit, overlaps with rounding, sign-in slowdown', async () => {
+  // Only a signed-in admin's CSV upload may be large; anyone else is refused before the body is read.
+  const big = JSON.stringify({ filename: 'x.csv', text: 'Date,User\n' + 'x'.repeat(1024 * 1024) });
+  const anon = await fetch(base + '/api/import/paymo/csv', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: big });
+  assert.equal(anon.status, 413);
+  const memberUp = await fetch(base + '/api/import/paymo/csv', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: as.riley.cookie }, body: big });
+  assert.equal(memberUp.status, 413);
+  const adminUp = await fetch(base + '/api/import/paymo/csv', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: as.morgan.cookie }, body: big });
+  assert.notEqual(adminUp.status, 413, 'admins can upload large files');
+  // A rounded timer entry (15:52–16:39 recorded, 60 minutes counted) doesn't overlap what comes after it.
+  const task = ids.T['Portal bug fixes'];
+  await query(`INSERT INTO time_entries (user_id, task_id, entry_date, start_time, end_time, minutes, source) VALUES ($1, $2, $3, '15:52', '16:39', 60, 'timer')`, [ids.U.riley, task, addDays(today, -2)]);
+  assert.equal(ok(await as.riley.post('/entries', { taskId: task, date: addDays(today, -2), start: '16:41', end: '16:51' }), 201).overlaps.length, 0);
+  assert.equal(ok(await as.riley.post('/entries', { taskId: task, date: addDays(today, -2), start: '16:30', end: '16:40' }), 201).overlaps.length, 1, 'real overlaps are still caught');
+  // Many failed sign-ins from one address slow things down but never lock out a correct password.
+  for (let i = 0; i < 32; i++) await new Client('spray').req('POST', '/auth/login', { email: `nobody${i}@example.com`, password: 'Summer2026!' });
+  const t0 = Date.now();
+  await new Client('jamie-again').login('jamie@fifthcolor.example');
+  assert.ok(Date.now() - t0 >= 250, 'it was slowed down');
 });
 
 function addMin(hm, n) { const [h, m] = hm.split(':').map(Number), t = h * 60 + m + n; return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`; }

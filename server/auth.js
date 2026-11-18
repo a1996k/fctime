@@ -56,6 +56,7 @@ export async function loadUser(req, _res, next) {
         `SELECT u.id, u.name, u.email, u.role, u.dept_id, u.capacity
            FROM sessions s JOIN users u ON u.id = s.user_id
           WHERE s.token_hash = $1 AND s.expires_at > now() AND u.archived_at IS NULL`, [sha(t)]);
+      if (req.user) req.sessionHash = sha(t);
     }
     next();
   } catch (e) { next(e); }
@@ -89,6 +90,14 @@ export function checkThrottle(key, limit = 10) {
   if (recent(key).length >= limit) throw new HttpError(429, 'Too many sign-in attempts. Try again in a few minutes.');
 }
 export function recordFailure(key) { const a = recent(key); a.push(Date.now()); attempts.set(key, a); }
+/**
+ * Slow down, never block, a network address that keeps failing: a script spraying one password across
+ * many emails crawls, but people behind the same office address can still sign in.
+ */
+export async function slowDown(key, after = 30) {
+  const n = recent(key).length;
+  if (n >= after) await new Promise(r => setTimeout(r, Math.min(5000, (n - after + 1) * 250)));
+}
 /** Count every attempt (used where each try should cost, like changing a password). */
 export function throttleLogin(key, limit = 10) { checkThrottle(key, limit); recordFailure(key); }
 export function clearLoginThrottle(key) { attempts.delete(key); }

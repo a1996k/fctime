@@ -13,7 +13,9 @@ import importer from './routes/import.js';
 export function createApp() {
   const app = express();
   app.disable('x-powered-by');
-  app.set('trust proxy', 'loopback');
+  // Behind a reverse proxy, set TRUST_PROXY (for example "1" or the proxy's address) so req.ip is the client's.
+  const tp = process.env.TRUST_PROXY;
+  app.set('trust proxy', !tp ? 'loopback' : /^\d+$/.test(tp) ? +tp : tp === 'true' ? true : tp);
   app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'same-origin');
@@ -24,10 +26,12 @@ export function createApp() {
 
   const api = express.Router();
   // CSV uploads for the Paymo import can be large; everything else stays small.
-  const smallJson = express.json({ limit: '200kb' }), bigJson = express.json({ limit: '40mb' });
-  api.use((req, res, next) => (req.path === '/import/paymo/csv' ? bigJson : smallJson)(req, res, next));
+  // Who's asking is known before any body is read: only a signed-in admin's CSV upload may be large,
+  // so nobody else can make the server read and parse big requests.
   api.use(requireJson);
   api.use(loadUser);
+  const smallJson = express.json({ limit: '200kb' }), bigJson = express.json({ limit: '40mb' });
+  api.use((req, res, next) => (req.path === '/import/paymo/csv' && req.user && req.user.role === 'admin' ? bigJson : smallJson)(req, res, next));
   api.use((req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
   api.use(core, tasks, time, reports, notifications, importer);
   api.use((_req, _res, next) => next(new HttpError(404, 'Not found.')));

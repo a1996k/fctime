@@ -1,7 +1,7 @@
 // Business rules shared by the routes. Every rule that protects data is enforced here,
 // on the server, regardless of what the browser shows.
 import { one, many } from './db.js';
-import { fromHM, rangesOverlap, roundUp } from '../public/js/shared/time.js';
+import { fromHM, rangesOverlap, roundUp, entrySpan } from '../public/js/shared/time.js';
 import { bad, conflict, forbidden, notFound } from './http.js';
 
 export const ROLES = { admin: 'Admin', ae: 'Manager', acct: 'Account Executive', member: 'Team Member' };
@@ -92,20 +92,16 @@ export async function assertWithinBudget(c, t, addMinutes, replacedMinutes = 0) 
 
 /* ---------- entries ---------- */
 
-/**
- * Timed entries for the same person and day that overlap this one. Saved anyway, as in the wireframe.
- * Ranges run from the start for the entry's minutes (capped at midnight), which is also how the calendar
- * draws them; that keeps zero-length and past-midnight timer entries from looking like all-day blocks.
- */
-export async function findOverlaps(c, userId, date, start, minutes, excludeId = null) {
-  if (!start || !(minutes > 0)) return [];
-  const a = fromHM(start), b = Math.min(1440, a + minutes);
+/** Timed entries for the same person and day that overlap this one. Saved anyway, as in the wireframe. */
+export async function findOverlaps(c, userId, date, start, end, minutes, excludeId = null) {
+  if (!start) return [];
+  const [a, b] = entrySpan(start, end, minutes);
   const rows = await c.many(
     `SELECT e.id, to_char(e.start_time, 'HH24:MI') AS start, to_char(e.end_time, 'HH24:MI') AS "end", e.minutes, t.title AS task_title
        FROM time_entries e JOIN tasks t ON t.id = e.task_id
       WHERE e.user_id = $1 AND e.entry_date = $2 AND e.start_time IS NOT NULL AND ($3::uuid IS NULL OR e.id <> $3)`,
     [userId, date, excludeId]);
-  return rows.filter(r => { const s = fromHM(r.start); return rangesOverlap(a, b, s, Math.min(1440, s + r.minutes)); });
+  return rows.filter(r => { const [s, e] = entrySpan(r.start, r.end, r.minutes); return rangesOverlap(a, b, s, e); });
 }
 
 export async function logEvent(c, entryId, action, actorId, extra = {}) {
@@ -149,7 +145,7 @@ export async function stopTimerRow(c, timer, settings, actorId) {
   await c.query('DELETE FROM timers WHERE id = $1', [timer.id]);
   const entryId = ins ? ins.id : (await c.one('SELECT id FROM time_entries WHERE source_timer_id = $1', [timer.id])).id;
   if (ins) await logEvent(c, entryId, 'created', actorId, { detail: { source: 'timer', rawMinutes: raw, rounding: settings.rounding_minutes, capped } });
-  const overlaps = await findOverlaps(c, timer.user_id, t.date, t.start, minutes, entryId);
+  const overlaps = await findOverlaps(c, timer.user_id, t.date, t.start, t.end, minutes, entryId);
   return { entryId, minutes, rawMinutes: raw, capped, overlaps };
 }
 

@@ -104,7 +104,7 @@ r.get('/entries/overlaps', h(async (req, res) => {
   if (!isISODate(date) || fromHM(start) == null || fromHM(end) == null) throw bad('Give a date, start and end.');
   if (exclude && !isUUID(exclude)) throw bad('Invalid entry.');
   const a = fromHM(start), b = fromHM(end);
-  res.json(b > a ? await findOverlaps({ many }, req.user.id, date, start, b - a, exclude || null) : []);
+  res.json(b > a ? await findOverlaps({ many }, req.user.id, date, start, end, b - a, exclude || null) : []);
 }));
 
 r.get('/entries/:id/history', h(async (req, res) => {
@@ -148,7 +148,7 @@ r.post('/entries', h(async (req, res) => {
     const t = await taskForTime(c, o.taskId, { lock: true });
     assertTaskOpenForTime(t);
     await assertWithinBudget(c, t, o.minutes);
-    const overlaps = await findOverlaps(c, req.user.id, o.date, o.start, o.minutes);
+    const overlaps = await findOverlaps(c, req.user.id, o.date, o.start, o.end, o.minutes);
     const e = await c.one(`INSERT INTO time_entries (user_id, task_id, entry_date, start_time, end_time, minutes, note, source)
       VALUES ($1, $2, $3, $4, $5, $6, $7, 'manual') RETURNING id`, [req.user.id, o.taskId, o.date, o.start, o.end, o.minutes, o.note]);
     await logEvent(c, e.id, 'created', req.user.id, { detail: { source: 'manual', minutes: o.minutes } });
@@ -177,7 +177,7 @@ r.patch('/entries/:id', h(async (req, res) => {
     if (o.taskId !== e.task_id) assertTaskOpenForTime(t);
     // Only added minutes count against the budget, so time already over it can still be corrected.
     await assertWithinBudget(c, t, o.minutes, o.taskId === e.task_id ? e.minutes : 0);
-    const overlaps = await findOverlaps(c, req.user.id, o.date, o.start, o.minutes, id);
+    const overlaps = await findOverlaps(c, req.user.id, o.date, o.start, o.end, o.minutes, id);
     // Editing returns a sent-back entry to draft; the reason stays on record until it’s resubmitted.
     await c.query(`UPDATE time_entries SET task_id = $1, entry_date = $2, start_time = $3, end_time = $4, minutes = $5, note = $6,
                    status = 'draft', updated_at = now() WHERE id = $7`, [o.taskId, o.date, o.start, o.end, o.minutes, o.note, id]);
