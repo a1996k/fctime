@@ -1,0 +1,23 @@
+{
+  "name": "fctime",
+  "version": "0.1.0",
+  "private": true,
+  "description": "FifthColor Time: internal time tracking for client work",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "db:migrate": "node scripts/migrate.js",
+    "db:seed": "node scripts/seed.js",
+    "db:reset": "node scripts/migrate.js --reset && node scripts/seed.js",
+    "test": "node --test --test-concurrency=1 test/*.test.js",
+    "verify:ui": "node scripts/verify-ui.js"
+  },
+  "dependencies": {
+    "express": "^5.3.0",
+    "pg": "^8.23.1"
+  }
+}
