@@ -78,12 +78,17 @@ export function requireJson(req, _res, next) {
   next();
 }
 
-// Simple in-memory throttle for sign-in attempts.
-const attempts = new Map();
-export function throttleLogin(key) {
-  const now = Date.now(), win = 10 * 60 * 1000;
-  const a = (attempts.get(key) || []).filter(t => now - t < win);
-  if (a.length >= 10) throw new HttpError(429, 'Too many sign-in attempts. Try again in a few minutes.');
-  a.push(now); attempts.set(key, a);
+// Simple in-memory throttle for sign-in attempts (per process; ten-minute window).
+const attempts = new Map(), WINDOW = 10 * 60 * 1000;
+function recent(key) {
+  const now = Date.now();
+  if (attempts.size > 5000) for (const [k, a] of attempts) if (!a.some(t => now - t < WINDOW)) attempts.delete(k);
+  return (attempts.get(key) || []).filter(t => now - t < WINDOW);
 }
+export function checkThrottle(key, limit = 10) {
+  if (recent(key).length >= limit) throw new HttpError(429, 'Too many sign-in attempts. Try again in a few minutes.');
+}
+export function recordFailure(key) { const a = recent(key); a.push(Date.now()); attempts.set(key, a); }
+/** Count every attempt (used where each try should cost, like changing a password). */
+export function throttleLogin(key, limit = 10) { checkThrottle(key, limit); recordFailure(key); }
 export function clearLoginThrottle(key) { attempts.delete(key); }

@@ -3,16 +3,23 @@ import { S, ui, api, me, isAdmin, user, svc, activeUsers, activeServices } from 
 import { esc, icon, btn, chip, field, inp, sel, tabs, table, empty, dialog, avatar, toast, alertPopup, selField } from '../ui.js';
 import { views, actions, forms, modals, changes, pageHead, openModal, closeModal, refresh, render, route, go, run } from '../core.js';
 import { hm, parseDuration } from '../shared/time.js';
+import { loadImport, importView, importForms } from './import.js';
+
+Object.assign(forms, importForms);
 
 const ROLE_HELP = 'Admins manage setup and can approve any step. Managers and Account Executives see their clients and their team’s timesheets. Team Members log time and work on tasks. Whoever owns a client approves its time first; each service line’s manager approves second.';
 const TZS = (() => { try { return Intl.supportedValuesOf('timeZone'); } catch { return ['America/Chicago', 'America/New_York', 'America/Denver', 'America/Los_Angeles', 'UTC']; } })();
+/** Browser zone lists can miss names like UTC or Asia/Kolkata; always offer the saved zone and UTC. */
+const zoneList = cur => [...new Set([cur, 'UTC', ...TZS])].filter(Boolean);
 
 views.settings = {
+  async load() { if (isAdmin() && route.parts[0] === 'import') await loadImport(); },
   render() {
     if (!isAdmin()) return pageHead({ title: 'Admins only' }) + empty('Lock', 'This page is for admins', 'Ask an admin if something here needs changing.', btn('Go home', { action: 'go', data: { href: '#/home' } }));
     const tab = route.parts[0] || 'people';
-    const head = pageHead({ title: 'Settings', sub: 'People and roles, service lines and their managers, and company defaults.' });
-    const t = tabs('set', [['people', 'People'], ['services', 'Service lines'], ['general', 'Company defaults']], tab);
+    const head = pageHead({ title: 'Settings', sub: 'People and roles, service lines and their managers, company defaults, and importing from Paymo.' });
+    const t = tabs('set', [['people', 'People'], ['services', 'Service lines'], ['general', 'Company defaults'], ['import', 'Import from Paymo']], tab);
+    if (tab === 'import') return head + t + importView();
     if (tab === 'services') return head + t + services();
     if (tab === 'general') return head + t + general();
     return head + t + people();
@@ -70,6 +77,7 @@ function services() {
       { label: 'Service line', primary: true, render: s => `<span class="svc-name"><span class="swatch" style="--svc:${esc(s.color)}"></span>${esc(s.name)}</span>` },
       { label: 'Bill rate', num: true, render: s => `$${(+s.rate).toFixed(0)}/h` },
       { label: 'Department manager', render: s => (s.manager_id ? esc(user(s.manager_id)?.name || '') : '<span class="muted">Admins approve</span>') },
+      { label: 'Paymo keywords', wrap: true, render: s => (s.match_keywords ? esc(s.match_keywords) : '<span class="muted">None</span>') },
       { label: 'People', num: true, render: s => S.boot.users.filter(u => u.dept_id === s.id && !u.archived_at).length },
       { label: 'Status', render: s => (s.archived_at ? chip('muted', 'Archived') : chip('success', 'Active', 'Check Circle')) },
       { label: '', render: s => btn('Edit', { size: 'sm', variant: 'ghost', action: 'svc-edit', data: { id: s.id } }) },
@@ -82,13 +90,14 @@ modals['svc'] = m => {
     ${field('Bill rate', inp('srate', s.rate, { type: 'number', min: 0, step: 1 }), { id: 'f-srate', suffix: '/h' })}
     ${field('Department manager', sel('smgr', [['', 'Admins approve'], ...activeUsers().map(u => [u.id, u.name])], s.manager_id || ''), { id: 'f-smgr', select: true, msg: 'Gives the second approval on time in this service line.' })}
     ${field('Color', `<input type="color" class="color-in" id="f-scolor" name="scolor" value="${esc(s.color)}">`, { id: 'f-scolor' })}
+    ${field('Paymo task list keywords', inp('skw', s.match_keywords || '', { placeholder: 'Design, Copy' }), { id: 'f-skw', cls: 'span', msg: 'Comma-separated. When importing from Paymo, task lists containing one of these words go to this service line.' })}
     ${m.id ? `<label class="inform-chip span"><input type="checkbox" name="sarchived"${s.archived_at ? ' checked' : ''}> <span>Archived. New tasks can’t use it.</span></label>` : ''}</div>`,
   btn('Cancel', { action: 'close-modal' }) + btn(m.id ? 'Save service line' : 'Add service line', { variant: 'primary', type: 'submit' }), 'sm')}</form>`;
 };
 actions['svc-new'] = () => openModal({ type: 'svc' });
 actions['svc-edit'] = a => openModal({ type: 'svc', id: a.dataset.id });
 forms['svc'] = async f => {
-  const fd = new FormData(f), m = ui.modal, body = { name: String(fd.get('sname') || '').trim(), rate: +fd.get('srate') || 0, managerId: fd.get('smgr') || null, color: fd.get('scolor') };
+  const fd = new FormData(f), m = ui.modal, body = { name: String(fd.get('sname') || '').trim(), rate: +fd.get('srate') || 0, managerId: fd.get('smgr') || null, color: fd.get('scolor'), matchKeywords: String(fd.get('skw') || '') };
   if (!body.name) return alertPopup('Name the service line', [['f-sname', 'Name', 'For example, Creative or Development.']]);
   if (m.id) { body.archived = !!fd.get('sarchived'); await api(`/service-lines/${m.id}`, { method: 'PATCH', body }); }
   else await api('/service-lines', { method: 'POST', body });
@@ -102,11 +111,14 @@ function general() {
       <div class="fields cols">${field('Round timer entries up to', sel('rounding', [['0', 'No rounding'], ['6', '6 minutes'], ['15', '15 minutes']], String(s.rounding_minutes)), { id: 'f-rounding', select: true })}
       ${field('Time budget alert at', inp('alert', s.budget_alert_pct, { type: 'number', min: 10, max: 100, step: 5 }), { id: 'f-alert', suffix: '% used', msg: 'Task budgets turn amber here and lock at 100%.' })}</div></section>
     <section class="fc-card"><div class="card-head"><div><h2>Workspace time zone</h2><p>Sets “today”, the dates timers land on, and when weeks start (Monday). Changing it doesn’t move entries already saved.</p></div></div>
-      <div class="fields cols">${field('Time zone', sel('tz', TZS.map(z => [z, z.replace(/_/g, ' ')]), s.time_zone), { id: 'f-tz', select: true, msg: `Today is ${s.today} in this time zone.` })}</div></section>
+      <div class="fields cols">${field('Time zone', sel('tz', zoneList(s.time_zone).map(z => [z, z.replace(/_/g, ' ')]), s.time_zone), { id: 'f-tz', select: true, msg: `Today is ${s.today} in this time zone.` })}</div></section>
     <div class="row">${btn('Save defaults', { variant: 'primary', type: 'submit' })}</div></form>`;
 }
 forms['settings'] = async f => {
   const fd = new FormData(f);
-  await api('/settings', { method: 'PATCH', body: { roundingMinutes: +fd.get('rounding'), budgetAlertPct: +fd.get('alert'), timeZone: fd.get('tz') } });
+  const body = { roundingMinutes: +fd.get('rounding'), budgetAlertPct: +fd.get('alert') };
+  // Only send the zone when it was changed, so a save can never switch it by accident.
+  if (fd.get('tz') && fd.get('tz') !== S.boot.settings.time_zone) body.timeZone = fd.get('tz');
+  await api('/settings', { method: 'PATCH', body });
   await refresh(); toast('Defaults saved');
 };

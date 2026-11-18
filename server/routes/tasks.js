@@ -1,19 +1,24 @@
 // Tasks, time budgets, and requests for more hours.
 import { Router } from 'express';
-import { one, many, tx } from '../db.js';
+import { one, many, query, tx } from '../db.js';
 import { h, bad, notFound, forbidden, uuidParam, str, isUUID } from '../http.js';
 import { requireUser, requireAdmin } from '../auth.js';
-import { isAdmin, TASK_STATUSES, loggedMinutes, visibleEntrySql, ENTRY_JOINS } from '../domain.js';
-import { isISODate, parseDuration } from '../../public/js/shared/time.js';
+import { isAdmin, TASK_STATUSES, loggedMinutes, visibleEntrySql, ENTRY_JOINS, canSetUpTasks, MAX_BUDGET_MINUTES } from '../domain.js';
+import { isISODate, parseDuration, hm } from '../../public/js/shared/time.js';
+import { notify, adminIds, notifyAssigned, taskLink } from '../notify.js';
 
+const db = { query, one, many };
 const r = Router();
 r.use(requireUser);
 
 /** Budget input: '12', '12.5', '1:30' hours, or budgetMinutes. */
 function budgetMinutes(b) {
-  if (b.budgetMinutes !== undefined) return Number.isInteger(b.budgetMinutes) ? b.budgetMinutes : NaN;
-  if (b.budget === undefined || b.budget === '' || b.budget === null) return null;
-  return parseDuration(String(b.budget));
+  let m;
+  if (b.budgetMinutes !== undefined) m = Number.isInteger(b.budgetMinutes) ? b.budgetMinutes : NaN;
+  else if (b.budget === undefined || b.budget === '' || b.budget === null) return null;
+  else m = parseDuration(String(b.budget));
+  if (m > MAX_BUDGET_MINUTES) throw bad('Budgets go up to 10,000 hours.', { field: 'budget' });
+  return m;
 }
 
 async function readTask(b, existing) {
@@ -42,6 +47,7 @@ async function readTask(b, existing) {
 }
 
 r.post('/tasks', h(async (req, res) => {
+  if (!canSetUpTasks(req.user)) throw forbidden('Admins and managers add tasks. Ask your account owner to add this one.');
   const projectId = uuidParam(req.body.projectId, 'project');
   const p = await one('SELECT p.id, c.archived_at FROM projects p JOIN clients c ON c.id = p.client_id WHERE p.id = $1', [projectId]);
   if (!p) throw bad('Choose a project.');
@@ -53,6 +59,7 @@ r.post('/tasks', h(async (req, res) => {
   const row = await one(`INSERT INTO tasks (project_id, service_line_id, title, assignee_id, status, start_date, due_date, budget_minutes, billable, notes, created_by)
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, true), COALESCE($10, ''), $11) RETURNING id`,
   [projectId, o.service_line_id, o.title, o.assignee_id, o.status, o.start_date || null, o.due_date, bm, o.billable ?? null, o.notes ?? null, req.user.id]);
+  await notifyAssigned(db, req.user, { id: row.id, project_id: projectId, title: o.title, assignee_id: o.assignee_id, due_date: o.due_date }, true);
   res.status(201).json({ id: row.id });
 }));
 
@@ -62,6 +69,13 @@ r.patch('/tasks/:id', h(async (req, res) => {
     const t = await c.one('SELECT * FROM tasks WHERE id = $1 FOR UPDATE', [id]);
     if (!t) throw notFound('That task doesn’t exist.');
     const o = await readTask(req.body, t);
+    // Admins and managers change anything (budgets: admins only). The person responsible can move the
+    // task along and keep notes. Everyone else can only look.
+    if (!canSetUpTasks(req.user)) {
+      const changed = Object.keys(o).filter(k => String(o[k] ?? '') !== String(t[k] ?? ''));
+      if (t.assignee_id !== req.user.id) { if (changed.length) throw forbidden('Only admins, managers and the person responsible can change this task.'); }
+      else if (changed.some(k => !['status', 'notes'].includes(k))) throw forbidden('You can update the status and notes. Ask a manager to change the rest.');
+    }
     const bm = budgetMinutes(req.body);
     if (bm !== null && bm !== t.budget_minutes) {
       // Only admins change a budget after the task exists; everyone else asks for more hours.
@@ -77,6 +91,7 @@ r.patch('/tasks/:id', h(async (req, res) => {
     if (keys.length) {
       await c.query(`UPDATE tasks SET ${keys.map((k, i) => `${k} = $${i + 1}`).join(', ')}, updated_at = now() WHERE id = $${keys.length + 1}`, [...keys.map(k => o[k]), id]);
     }
+    if (o.assignee_id && o.assignee_id !== t.assignee_id) await notifyAssigned(c, req.user, { ...t, ...o }, false);
   });
   res.json({ ok: true });
 }));
@@ -128,6 +143,8 @@ r.post('/tasks/:id/budget', requireAdmin, h(async (req, res) => {
     if (!t) throw notFound();
     await c.query('UPDATE tasks SET budget_minutes = budget_minutes + $1, updated_at = now() WHERE id = $2', [minutes, id]);
     await c.query('INSERT INTO task_budget_log (task_id, minutes, reason, actor_id) VALUES ($1, $2, $3, $4)', [id, minutes, reason, req.user.id]);
+    const x = await c.one('SELECT title, project_id, assignee_id FROM tasks WHERE id = $1', [id]);
+    await notify(c, [x.assignee_id], 'hours', `More time on ${x.title}`, `${req.user.name} added ${hm(minutes)}: ${reason}`, taskLink(x.project_id, id), { actorId: req.user.id });
     return { budget: t.budget_minutes + minutes };
   });
   res.json(out);
@@ -140,7 +157,10 @@ r.post('/tasks/:id/hours-requests', h(async (req, res) => {
   if (await one(`SELECT 1 FROM hours_requests WHERE task_id = $1 AND requested_by = $2 AND status = 'pending'`, [id, req.user.id])) {
     throw bad('You already have a request waiting on this task.');
   }
-  const q = await one('INSERT INTO hours_requests (task_id, requested_by, minutes, reason) VALUES ($1, $2, $3, $4) RETURNING id', [id, req.user.id, minutes, reason]);
+  const q = await one('INSERT INTO hours_requests (task_id, requested_by, minutes, reason) VALUES ($1, $2, $3, $4) RETURNING id', [id, req.user.id, minutes, reason])
+    .catch(e => { if (e.code === '23505') throw bad('You already have a request waiting on this task.'); throw e; });
+  const x = await one(`SELECT t.title, cl.name AS client_name FROM tasks t JOIN projects p ON p.id = t.project_id JOIN clients cl ON cl.id = p.client_id WHERE t.id = $1`, [id]);
+  await notify(db, await adminIds(db), 'hours', `${req.user.name} asked for more time`, `${hm(minutes)} on “${x.title}”, ${x.client_name}: ${reason}`, '#/time/hours', { actorId: req.user.id });
   res.status(201).json({ id: q.id });
 }));
 r.get('/hours-requests', h(async (req, res) => {
@@ -174,6 +194,10 @@ r.post('/hours-requests/:id/:decision', requireAdmin, h(async (req, res) => {
       await c.query('INSERT INTO task_budget_log (task_id, minutes, reason, actor_id, request_id) VALUES ($1, $2, $3, $4, $5)',
         [q.task_id, q.minutes, q.reason, req.user.id, id]);
     }
+    const x = await c.one('SELECT title, project_id, assignee_id, budget_minutes FROM tasks WHERE id = $1', [q.task_id]);
+    await notify(c, [q.requested_by, x.assignee_id], 'hours', d === 'approve' ? `More time approved: ${x.title}` : `Request declined: ${x.title}`,
+      d === 'approve' ? `${req.user.name} added ${hm(q.minutes)}. The budget is now ${hm(x.budget_minutes)}.` : `${req.user.name}: ${note}`,
+      taskLink(x.project_id, q.task_id), { actorId: req.user.id });
   });
   res.json({ ok: true });
 }));

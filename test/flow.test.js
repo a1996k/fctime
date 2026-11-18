@@ -28,9 +28,16 @@ class Client {
   post(p, b = {}) { return this.req('POST', p, b); }
   patch(p, b) { return this.req('PATCH', p, b); }
   del(p) { return this.req('DELETE', p, {}); }
-  async login(email) { const r = await this.post('/auth/login', { email, password: PW }); assert.equal(r.status, 200, `${this.name} signs in`); return this; }
+  async login(email, password = PW) { const r = await this.post('/auth/login', { email, password }); assert.equal(r.status, 200, `${this.name} signs in`); return this; }
 }
 const ok = (r, status = 200) => { assert.equal(r.status, status, JSON.stringify(r.data)); return r.data; };
+// Reviewers send back the version of each entry they looked at.
+const vers = entries => Object.fromEntries(entries.map(e => [e.id, e.version]));
+async function versionsVia(client, ids) {
+  const m = {};
+  for (const g of ok(await client.get('/approvals'))) for (const e of g.entries) if (ids.includes(e.id)) m[e.id] = e.version;
+  return m;
+}
 const as = {};
 
 before(async () => {
@@ -40,7 +47,7 @@ before(async () => {
   server = createApp().listen(0);
   await new Promise(r => server.once('listening', r));
   base = `http://localhost:${server.address().port}`;
-  for (const k of ['morgan', 'alex', 'sam', 'jamie', 'casey', 'riley', 'taylor']) as[k] = await new Client(k).login(`${k}@fifthcolor.example`);
+  for (const k of ['morgan', 'alex', 'sam', 'jamie', 'casey', 'riley', 'taylor', 'chris']) as[k] = await new Client(k).login(`${k}@fifthcolor.example`);
 });
 after(async () => { server && server.close(); await closePool(); });
 
@@ -200,11 +207,11 @@ test('4. submit, return with a reason, correct, resubmit, approve both steps', a
   assert.ok(await groupFor('alex', 'ae'), 'Alex sees it as account owner');
   assert.equal(await groupFor('jamie', 'ae'), undefined, 'the department manager waits for step 1');
   assert.equal(await groupFor('sam', 'ae'), undefined, 'other owners do not see it');
-  const g1 = await groupFor('alex', 'ae'), entryIds = g1.entries.map(e => e.id);
-  assert.equal((await as.casey.post('/approvals/approve', { step: 'ae', entryIds })).status, 403, 'no approving your own time');
-  assert.equal((await as.jamie.post('/approvals/approve', { step: 'ae', entryIds })).status, 403, 'manager can’t do step 1');
-  assert.equal((await as.alex.post('/approvals/return', { step: 'ae', entryIds, reason: '   ' })).status, 400, 'a reason is required');
-  ok(await as.alex.post('/approvals/return', { step: 'ae', entryIds, reason: 'Split the overlap entry into its own task note' }));
+  const g1 = await groupFor('alex', 'ae'), entryIds = g1.entries.map(e => e.id), versions = vers(g1.entries);
+  assert.equal((await as.casey.post('/approvals/approve', { step: 'ae', entryIds, versions })).status, 403, 'no approving your own time');
+  assert.equal((await as.jamie.post('/approvals/approve', { step: 'ae', entryIds, versions })).status, 403, 'manager can’t do step 1');
+  assert.equal((await as.alex.post('/approvals/return', { step: 'ae', entryIds, versions, reason: '   ' })).status, 400, 'a reason is required');
+  ok(await as.alex.post('/approvals/return', { step: 'ae', entryIds, versions, reason: 'Split the overlap entry into its own task note' }));
   let es = ok(await as.casey.get(`/entries?from=${ws}&to=${today}`)).filter(e => entryIds.includes(e.id));
   assert.ok(es.every(e => e.status === 'rejected' && e.rejected_by === ids.U.alex && e.rejected_step === 'ae' && e.rejected_at));
   assert.match(es[0].rejected_reason, /Split the overlap/);
@@ -218,12 +225,14 @@ test('4. submit, return with a reason, correct, resubmit, approve both steps', a
 
   // step 1: Alex approves; step 2: Jamie, the Creative manager
   const g2 = await groupFor('alex', 'ae');
-  ok(await as.alex.post('/approvals/approve', { step: 'ae', entryIds: g2.entries.map(e => e.id) }));
-  assert.equal((await as.alex.post('/approvals/approve', { step: 'ae', entryIds: g2.entries.map(e => e.id) })).status, 409, 'repeating a decision is refused');
+  // approving with the versions from before the correction is refused (the content changed)
+  assert.equal((await as.alex.post('/approvals/approve', { step: 'ae', entryIds: g2.entries.map(e => e.id), versions })).status, 409, 'stale versions are refused');
+  ok(await as.alex.post('/approvals/approve', { step: 'ae', entryIds: g2.entries.map(e => e.id), versions: vers(g2.entries) }));
+  assert.equal((await as.alex.post('/approvals/approve', { step: 'ae', entryIds: g2.entries.map(e => e.id), versions: vers(g2.entries) })).status, 409, 'repeating a decision is refused');
   const g3 = await groupFor('jamie', 'dept');
   assert.ok(g3, 'Jamie sees it as department manager');
   assert.equal(g3.scope, 'Creative department');
-  ok(await as.jamie.post('/approvals/approve', { step: 'dept', entryIds: g3.entries.map(e => e.id) }));
+  ok(await as.jamie.post('/approvals/approve', { step: 'dept', entryIds: g3.entries.map(e => e.id), versions: vers(g3.entries) }));
   es = ok(await as.casey.get(`/entries?from=${ws}&to=${today}`)).filter(e => entryIds.includes(e.id));
   assert.ok(es.every(e => e.status === 'approved' && e.ae_by === ids.U.alex && e.dept_by === ids.U.jamie && e.ae_at && e.dept_at));
   // audit trail records who did what
@@ -238,15 +247,25 @@ test('4b. reviewer exceptions from the wireframe', async () => {
   const g = ok(await as.morgan.get('/approvals')).find(x => x.entries.some(e => e.id === t.id));
   assert.equal(g.step, 'ae'); assert.match(g.approver, /Admins/);
   assert.equal(ok(await as.alex.get('/approvals')).find(x => x.entries.some(e => e.id === t.id)), undefined);
-  const r = ok(await as.morgan.post('/approvals/approve', { step: 'ae', entryIds: g.entries.map(e => e.id) }));
+  const r = ok(await as.morgan.post('/approvals/approve', { step: 'ae', entryIds: g.entries.map(e => e.id), versions: vers(g.entries) }));
   assert.equal(r.fullyApproved, r.count, 'one approval covered both steps');
-  // A department manager can’t approve their own time at step 2; an admin can.
+  // A department manager can’t approve their own time at step 2; an admin can, and sees why it came to admins.
   const j = ok(await as.jamie.post('/entries', { taskId: ids.T['Holiday campaign concepts'], date: today, duration: '0:45' }), 201);
   ok(await as.jamie.post('/timesheets/submit', { weekStart: ws }));
-  ok(await as.alex.post('/approvals/approve', { step: 'ae', entryIds: [j.id] }));
+  ok(await as.alex.post('/approvals/approve', { step: 'ae', entryIds: [j.id], versions: await versionsVia(as.alex, [j.id]) }));
   assert.equal(ok(await as.jamie.get('/approvals')).find(x => x.entries.some(e => e.id === j.id)), undefined, 'not offered to Jamie');
-  assert.equal((await as.jamie.post('/approvals/approve', { step: 'dept', entryIds: [j.id] })).status, 403);
-  ok(await as.morgan.post('/approvals/approve', { step: 'dept', entryIds: [j.id] }));
+  assert.equal((await as.jamie.post('/approvals/approve', { step: 'dept', entryIds: [j.id], versions: {} })).status, 403);
+  const jg = ok(await as.morgan.get('/approvals')).find(x => x.entries.some(e => e.id === j.id));
+  assert.equal(jg.approver, 'Admins (Jamie Chen’s own time)');
+  ok(await as.morgan.post('/approvals/approve', { step: 'dept', entryIds: [j.id], versions: vers(jg.entries) }));
+  // An admin's own time goes to another admin while there is one.
+  ok(await as.morgan.post('/users', { name: 'Avery Stone', email: 'avery@fifthcolor.example', role: 'admin', password: PW }), 201);
+  const mine = ok(await as.morgan.post('/entries', { taskId: ids.T['Team meetings'], date: today, duration: '0:30' }), 201);
+  ok(await as.morgan.post('/timesheets/submit', { weekStart: ws }));
+  assert.equal(ok(await as.morgan.get('/approvals')).find(x => x.entries.some(e => e.id === mine.id)), undefined, 'not offered to Morgan');
+  assert.equal((await as.morgan.post('/approvals/approve', { step: 'ae', entryIds: [mine.id], versions: {} })).status, 403);
+  const avery = await new Client('avery').login('avery@fifthcolor.example');
+  assert.ok(ok(await avery.get('/approvals')).some(x => x.entries.some(e => e.id === mine.id)), 'the other admin gets it');
 });
 
 test('5. report totals and CSV reconcile, and follow permissions', async () => {
@@ -285,6 +304,127 @@ test('5. report totals and CSV reconcile, and follow permissions', async () => {
   assert.equal((await as.alex.get(`/entries?user=${ids.U.casey}&from=${ws}&to=${today}`)).status, 200, 'managers see team timesheets');
   assert.equal((await as.alex.get(`/entries?user=${ids.U.morgan}&from=${ws}&to=${today}`)).status, 403, '…but not admins’');
   assert.equal((await as.jamie.get(`/entries?user=${ids.U.casey}&from=${ws}&to=${today}`)).status, 200, 'department managers see their department');
+});
+
+test('6. notifications reach the right people, once', async () => {
+  const titles = async who => ok(await as[who].get('/notifications')).items.map(n => `${n.type}|${n.title}|${n.body}`);
+  const casey = await titles('casey'), alex = await titles('alex'), jamie = await titles('jamie'), morgan = await titles('morgan'), sam = await titles('sam');
+  const has = (list, re, msg) => assert.ok(list.some(t => re.test(t)), `${msg}\n${list.join('\n')}`);
+  const lacks = (list, re, msg) => assert.ok(!list.some(t => re.test(t)), msg);
+  has(casey, /^assigned\|You’re responsible for Holiday menu boards\|Morgan Hale added it/, 'Casey hears about the task Morgan gave her');
+  has(alex, /^time\|Time to approve\|Casey Diaz submitted .* on Northwind Coffee/, 'the account owner hears about submitted time');
+  lacks(sam, /Casey Diaz submitted/, 'other owners hear nothing');
+  has(casey, /^time\|Your time was sent back\|Alex Rivera: Split the overlap/, 'Casey hears why it came back');
+  has(jamie, /^time\|Time to approve\|Casey Diaz’s Creative time .* ready for the department sign-off/, 'the department manager hears after step 1');
+  has(casey, /^time\|Your time was approved\|/, 'Casey hears when it is fully approved');
+  has(morgan, /^hours\|Casey Diaz asked for more time\|1:30 on “Holiday menu boards”, Northwind Coffee/, 'admins hear about hours requests');
+  has(casey, /^hours\|More time approved: Holiday menu boards\|Morgan Hale added 1:30/, 'the requester hears the decision');
+  has(casey, /^budget\|Locked: Holiday menu boards used its time budget/, 'locking at 100% is announced');
+  has(morgan, /^budget\|Locked: Holiday menu boards/, 'admins hear about locks too');
+  // Internal client has no owner, so Taylor’s submission went to admins (not to Taylor)
+  has(morgan, /^time\|Time to approve\|Taylor Kim submitted .* on FifthColor \(internal\)/, 'no owner means admins are told');
+  // Jamie’s own Creative time skipped Jamie at step 2 and went to admins
+  has(morgan, /^time\|Time to approve\|Jamie Chen’s Creative time/, 'a manager’s own time goes to admins');
+  lacks(jamie, /Jamie Chen’s Creative time/, 'not to the manager themself');
+  // due-date reminders are created once, for the assignee
+  const due = (await titles('casey')).filter(t => /^due\|Due today: Holiday menu boards/.test(t));
+  assert.equal(due.length, 1, 'one reminder, even after reloading');
+  // marking read is per person; someone else’s ids are ignored
+  const alexItems = ok(await as.alex.get('/notifications')).items;
+  const before = ok(await as.alex.get('/notifications?count=1')).unread;
+  ok(await as.casey.post('/notifications/read', { ids: alexItems.map(n => n.id) }));
+  assert.equal(ok(await as.alex.get('/notifications?count=1')).unread, before, 'Casey can’t mark Alex’s notifications');
+  const r = ok(await as.alex.post('/notifications/read', { all: true }));
+  assert.equal(r.unread, 0);
+  assert.equal(ok(await as.alex.get('/bootstrap')).counts.notifications, 0);
+});
+
+test('7. review fixes: task permissions and frozen routing', async () => {
+  const mk = async (who, extra = {}) => ok(await as[who].post('/tasks', { projectId: ids.P['nw-ret'], title: `Review task ${Math.random().toString(36).slice(2, 7)}`, serviceLineId: ids.S.creative, assigneeId: ids.U.casey, dueDate: today, budget: '5', ...extra }), 201).id;
+  assert.equal((await as.casey.post('/tasks', { projectId: ids.P['nw-ret'], title: 'Overflow', serviceLineId: ids.S.creative, assigneeId: ids.U.casey, dueDate: today, budget: '500' })).status, 403, 'team members can’t create tasks (or budgets)');
+  const tid = await mk('alex');
+  assert.equal((await as.riley.patch(`/tasks/${tid}`, { serviceLineId: ids.S.development })).status, 403, 'others can’t edit');
+  assert.equal((await as.riley.patch(`/tasks/${tid}`, { status: 'done' })).status, 403, 'others can’t mark it done');
+  ok(await as.casey.patch(`/tasks/${tid}`, { status: 'review', notes: 'Ready for a look' }), 200);
+  assert.equal((await as.casey.patch(`/tasks/${tid}`, { billable: false })).status, 403, 'the person responsible can’t flip billable');
+  // Hijack attempt from the review: submitted Creative time stays with the Creative manager even if the task moves.
+  const e = ok(await as.casey.post('/entries', { taskId: tid, date: today, duration: '0:20' }), 201).entry;
+  ok(await as.casey.post('/timesheets/submit', { weekStart: ws }));
+  ok(await as.alex.patch(`/tasks/${tid}`, { serviceLineId: ids.S.development }));
+  ok(await as.alex.post('/approvals/approve', { step: 'ae', entryIds: [e.id], versions: await versionsVia(as.alex, [e.id]) }));
+  assert.equal(ok(await as.riley.get('/approvals')).find(g => g.entries.some(x => x.id === e.id)), undefined, 'not routed to the Development manager');
+  assert.ok(ok(await as.jamie.get('/approvals')).some(g => g.entries.some(x => x.id === e.id)), 'still with the Creative manager');
+  // Approved billable time keeps its billable flag when the task changes later.
+  const before = ok(await as.morgan.get(`/reports/time?from=${ws}&to=${addDays(ws, 6)}&status=approved`)).totals;
+  ok(await as.morgan.patch(`/tasks/${state.task}`, { billable: false }));
+  const after = ok(await as.morgan.get(`/reports/time?from=${ws}&to=${addDays(ws, 6)}&status=approved`)).totals;
+  assert.deepEqual(after, before, 'approved totals unchanged');
+  ok(await as.morgan.patch(`/tasks/${state.task}`, { billable: true }));
+  assert.equal((await as.morgan.post('/tasks', { projectId: ids.P['nw-ret'], title: 'Huge', serviceLineId: ids.S.creative, assigneeId: ids.U.casey, dueDate: today, budgetMinutes: 2 ** 40 })).status, 400, 'budget cap');
+});
+
+test('8. review fixes: entries, timers and approvals', async () => {
+  // admins can read an entry's history
+  assert.equal(ok(await as.morgan.get(`/entries/${state.timerEntry}/history`))[0].action, 'created');
+  // over-budget time can still be corrected; only added minutes are blocked
+  const tid = ok(await as.morgan.post('/tasks', { projectId: ids.P['nw-ret'], title: 'Small job', serviceLineId: ids.S.creative, assigneeId: ids.U.riley, dueDate: today, budget: '1' }), 201).id;
+  const tmr = crypto.randomUUID();
+  ok(await as.riley.post('/timer/start', { taskId: tid, timerId: tmr }), 201);
+  assert.equal((await as.casey.post('/timer/start', { taskId: tid, timerId: tmr })).status, 409, 'someone else’s timer id reveals nothing');
+  await query(`UPDATE timers SET started_at = now() - interval '75 minutes' WHERE id = $1`, [tmr]);
+  const over = ok(await as.riley.post('/timer/stop', { timerId: tmr })).entry;
+  assert.equal(over.minutes, 75);
+  ok(await as.riley.patch(`/entries/${over.id}`, { taskId: tid, date: over.date, start: over.start, end: over.end, note: 'Note added' }));
+  ok(await as.riley.patch(`/entries/${over.id}`, { taskId: tid, date: over.date, duration: '1:05' }));
+  assert.equal((await as.riley.patch(`/entries/${over.id}`, { taskId: tid, date: over.date, duration: '1:30' })).status, 409, 'adding minutes is still blocked');
+  // timer rounding survives a note-only edit
+  ok(await as.morgan.patch('/settings', { roundingMinutes: 15 }));
+  const t2 = crypto.randomUUID(), big = ok(await as.morgan.post('/tasks', { projectId: ids.P['nw-ret'], title: 'Rounded job', serviceLineId: ids.S.creative, assigneeId: ids.U.riley, dueDate: today, budget: '5' }), 201).id;
+  ok(await as.riley.post('/timer/start', { taskId: big, timerId: t2 }), 201);
+  await query(`UPDATE timers SET started_at = now() - interval '47 minutes' WHERE id = $1`, [t2]);
+  const rounded = ok(await as.riley.post('/timer/stop', { timerId: t2 })).entry;
+  ok(await as.morgan.patch('/settings', { roundingMinutes: 0 }));
+  assert.equal(rounded.minutes, 60);
+  const kept = ok(await as.riley.patch(`/entries/${rounded.id}`, { taskId: big, date: rounded.date, start: rounded.start, end: rounded.end, note: 'Just a note' })).entry;
+  assert.equal(kept.minutes, 60, 'unchanged times keep the rounded minutes');
+  // zero-length and past-midnight timer entries: no false overlaps, and they can be saved again
+  const z = (await one(`INSERT INTO time_entries (user_id, task_id, entry_date, start_time, end_time, minutes, source) VALUES ($1, $2, $3, '23:50', '00:10', 20, 'timer') RETURNING id`, [ids.U.riley, big, addDays(today, -1)])).id;
+  const late = ok(await as.riley.post('/entries', { taskId: big, date: addDays(today, -1), start: '22:00', end: '23:30' }), 201);
+  assert.equal(late.overlaps.length, 0, 'an entry crossing midnight doesn’t cover the whole evening');
+  ok(await as.riley.patch(`/entries/${z}`, { taskId: big, date: addDays(today, -1), start: '23:50', end: '00:10', note: 'Late fix' }));
+  assert.equal((await one('SELECT minutes FROM time_entries WHERE id = $1', [z])).minutes, 20);
+  // no logging far into the future
+  assert.equal((await as.riley.post('/entries', { taskId: big, date: addDays(today, 40), duration: '1' })).status, 400);
+  // a running timer blocks only the week it will land in
+  const t3 = crypto.randomUUID();
+  ok(await as.chris.post('/timer/start', { taskId: ids.T['Paid social plan'], timerId: t3 }), 201);
+  await query(`UPDATE timers SET started_at = (($2::date - 1) + time '23:00') AT TIME ZONE 'America/Chicago' WHERE id = $1`, [t3, ws]);
+  const lastWeek = await as.chris.post('/timesheets/submit', { weekStart: addDays(ws, -7) });
+  assert.equal(lastWeek.status, 409); assert.equal(lastWeek.data.code, 'timer_running');
+  ok(await as.chris.post('/entries', { taskId: ids.T['Paid social plan'], date: today, duration: '0:30' }), 201);
+  ok(await as.chris.post('/timesheets/submit', { weekStart: ws }), 200);
+  // two requests for more hours at once: one gets through
+  const pair = await Promise.all([1, 2].map(() => as.riley.post(`/tasks/${tid}/hours-requests`, { hours: '1', reason: 'More boards' })));
+  assert.deepEqual(pair.map(p => p.status).sort(), [201, 400]);
+});
+
+test('9. review fixes: people, sign-in and data hygiene', async () => {
+  assert.equal((await as.morgan.post('/users', { name: 'X', email: 'x@fifthcolor.example', role: 'constructor', password: 'longenough' })).status, 400);
+  assert.equal((await as.morgan.post('/users', { name: 'X', email: 'x@fifthcolor.example', role: 'member', deptId: crypto.randomUUID(), password: 'longenough' })).status, 400);
+  // bill rates are for managers and admins
+  assert.equal(ok(await as.casey.get('/bootstrap')).serviceLines[0].rate, undefined);
+  assert.ok(ok(await as.alex.get('/bootstrap')).serviceLines[0].rate !== undefined);
+  // people change their own password
+  assert.equal((await as.casey.post('/auth/password', { current: 'wrong', next: 'new-password-1' })).status, 400);
+  ok(await as.casey.post('/auth/password', { current: PW, next: 'new-password-1' }));
+  assert.equal((await new Client('c').req('POST', '/auth/login', { email: 'casey@fifthcolor.example', password: PW })).status, 400);
+  await new Client('c2').login('casey@fifthcolor.example', 'new-password-1');
+  // archiving someone saves their running timer instead of stranding it
+  ok(await as.taylor.post('/timer/start', { taskId: ids.T['Quarterly analytics review'], timerId: crypto.randomUUID() }), 201);
+  ok(await as.morgan.patch(`/users/${ids.U.taylor}`, { archived: true }));
+  assert.equal((await one('SELECT COUNT(*)::int AS n FROM timers WHERE user_id = $1', [ids.U.taylor])).n, 0);
+  assert.ok(await one(`SELECT 1 FROM time_entries WHERE user_id = $1 AND source = 'timer' AND status = 'draft'`, [ids.U.taylor]));
+  assert.equal((await as.taylor.get('/bootstrap')).status, 401, 'their sessions end');
 });
 
 function addMin(hm, n) { const [h, m] = hm.split(':').map(Number), t = h * 60 + m + n; return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`; }

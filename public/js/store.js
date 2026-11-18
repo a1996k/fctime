@@ -1,5 +1,6 @@
 // App state, API client and lookups.
 import { weekStart, addDays } from './shared/time.js';
+import { setTimeZone } from './ui.js';
 
 export class ApiError extends Error { constructor(status, body) { super(body.error || `Request failed (${status})`); this.status = status; this.body = body; } }
 
@@ -42,6 +43,7 @@ export async function loadBoot() {
   const b = await api('/bootstrap', { retries: 2 });
   S.boot = b;
   S.clockSkew = b.settings.server_now - Date.now();
+  setTimeZone(b.settings.time_zone);
   const by = list => Object.fromEntries(list.map(x => [x.id, x]));
   S.idx = { users: by(b.users), svc: by(b.serviceLines), clients: by(b.clients), projects: by(b.projects), tasks: by(b.tasks) };
   return b;
@@ -50,6 +52,9 @@ export async function loadBoot() {
 export const me = () => S.boot.me;
 export const isAdmin = () => me().role === 'admin';
 export const isMgr = () => ['ae', 'acct'].includes(me().role);
+/** Admins and managers set up work (the server enforces the same rule). */
+export const canSetUp = () => isAdmin() || isMgr();
+export const canWorkOn = t => canSetUp() || t.assignee_id === me().id;
 export const roleName = r => S.boot.roles[r] || r;
 export const user = id => S.idx.users[id] || null;
 export const userName = id => (user(id) || { name: 'Unassigned' }).name;

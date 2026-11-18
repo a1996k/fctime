@@ -1,6 +1,6 @@
 // Home (wireframe viewMyWork + homeTaskSection): timer, this week, and tasks grouped by due date.
-import { S, ui, api, me, roleName, svc, taskCtx, isDone, dueBucket, thisWeek, today, activeServices, activeUsers, user, capacityMinutes } from '../store.js';
-import { esc, btn, seg, selField, empty, wlabel } from '../ui.js';
+import { S, ui, api, me, roleName, svc, taskCtx, isDone, dueBucket, thisWeek, today, activeServices, activeUsers, user, capacityMinutes, canSetUp } from '../store.js';
+import { esc, btn, gated, seg, selField, empty, wlabel } from '../ui.js';
 import { views, actions, changes, pageHead, hmsSince, render } from '../core.js';
 import { taskRow } from './tasks.js';
 import { addDays, hm } from '../shared/time.js';
@@ -54,7 +54,7 @@ function taskSection() {
     ${selField('hf-svc', [['all', 'All service lines'], ...activeServices().map(s => [s.id, s.name])], f.svc, { change: 'hf' })}
     ${selField('hf-due', [['all', 'Any due date'], ...BUCKETS.map(b => [b[0], b[1]])], f.due, { change: 'hf' })}
     ${selField('hf-status', [['open', 'Open'], ['done', 'Done'], ['all', 'Open and done']], f.status, { change: 'hf' })}
-    <span class="spacer"></span>${btn('Add task', { variant: 'ink', icon: 'Plus', action: 'task-new' })}</div>`;
+    <span class="spacer"></span>${gated('Add task', canSetUp(), 'Admins and managers add tasks', { variant: 'ink', icon: 'Plus', action: 'task-new' })}</div>`;
   const groups = BUCKETS.map(([k, l, col]) => {
     const g = list.filter(t => dueBucket(t) === k).sort((a, b) => (a.due_date < b.due_date ? -1 : 1));
     if (!g.length) return '';

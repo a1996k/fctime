@@ -1,6 +1,6 @@
 // Router, shell (sidebar and page header), event delegation, and the timer shared by every screen.
 import { S, ui, api, ApiError, loadBoot, me, isAdmin, roleName, taskCtx, now, uuid, svc } from './store.js';
-import { esc, icon, btn, avatar, toast, alertPopup, dialog } from './ui.js';
+import { esc, icon, btn, avatar, toast, alertPopup, dialog, dayOf, clock, dlabel } from './ui.js';
 import { LOGO } from './icons.js';
 import { hm } from './shared/time.js';
 
@@ -32,7 +32,15 @@ export async function loadAndRender() {
   try {
     if (v.load) await v.load();
   } catch (e) { if (ticket === loading) handleError(e); }
-  if (ticket === loading) render();
+  if (ticket !== loading) return;
+  render();
+  // Links from notifications can name a task: open it, then drop it from the address.
+  const tid = route.query.task;
+  if (tid && actions['task-open']) {
+    setQuery({ task: null });
+    if (S.idx.tasks[tid]) actions['task-open']({ dataset: { id: tid } });
+    else toast('That task no longer exists', '', 'info');
+  }
 }
 /** Reload server data (bootstrap and the current view) and redraw. */
 export async function refresh() {
@@ -54,9 +62,26 @@ export function render() {
 }
 export function renderModal() {
   const root = document.getElementById('modal-root');
-  if (!ui.modal) { root.innerHTML = ''; return; }
+  if (!ui.modal) { root.innerHTML = ''; root._modal = null; return; }
+  // Redrawing the same dialog (data refreshed, a load finished, the window resized) keeps what the
+  // person has typed and where their cursor is.
+  const same = root._modal === ui.modal;
+  const kept = same ? [...root.querySelectorAll('input[id], select[id], textarea[id]')].filter(el => el.type !== 'file').map(el => [el.id, el.type === 'checkbox' || el.type === 'radio' ? el.checked : el.value]) : [];
+  const active = same && root.contains(document.activeElement) ? document.activeElement : null;
+  const focus = active && active.id ? { id: active.id, start: active.selectionStart, end: active.selectionEnd } : null;
   const m = modals[ui.modal.type];
   root.innerHTML = m ? m(ui.modal) : '';
+  root._modal = ui.modal;
+  if (same) {
+    for (const [id, v] of kept) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      if (el.type === 'checkbox' || el.type === 'radio') el.checked = v; else el.value = v;
+    }
+    const el = focus && document.getElementById(focus.id);
+    if (el) { el.focus(); try { if (focus.start != null) el.setSelectionRange(focus.start, focus.end); } catch { /* not a text field */ } }
+    return;
+  }
   const f = root.querySelector('form[data-form]');
   const first = root.querySelector('[autofocus]') || (f && f.querySelector('input:not([type=checkbox]):not([type=hidden]):not([readonly]):not(:disabled),select,textarea'));
   if (first && !ui.modal.noFocus) first.focus();
@@ -95,8 +120,55 @@ function sidebar() {
     ${isRail ? `<a class="fc-sidebar__searchbtn" aria-label="Search clients" href="${href('clients')}">${icon('Search')}</a>` : `<div class="fc-sidebar__search">${icon('Search')}<input placeholder="Search clients" aria-label="Search clients" id="sb-search" value="${esc(ui.q || '')}" autocomplete="off"></div>`}
     <div class="nav-scroll"><div class="fc-sidebar__items">${items}</div></div>${foot}</nav>`;
 }
+/* ---------- notifications bell (wireframe bell(), bellPanel(), openNotifLink()) ---------- */
+const NICON = { time: 'Clock', hours: 'Copy', assigned: 'User', due: 'Calendar', budget: 'Alert' };
+function nwhen(ts) {
+  const day = dayOf(ts);
+  return day === S.boot.settings.today ? `Today, ${clock(ts)}` : dlabel(day);
+}
+function bell() {
+  const un = S.boot.counts.notifications || 0;
+  return `<div class="bell-wrap"><button type="button" class="bell${ui.bellOpen ? ' is-open' : ''}" data-action="bell" aria-label="Notifications${un ? `, ${un} unread` : ''}" aria-expanded="${!!ui.bellOpen}" title="Notifications">${icon('Bell', 20)}${un ? `<span class="bell-count">${un > 99 ? '99+' : un}</span>` : ''}</button>${ui.bellOpen ? bellPanel() : ''}</div>`;
+}
+function bellPanel() {
+  const list = ui.notifs;
+  const item = n => `<button type="button" class="notif${n.read_at ? '' : ' is-unread'}" data-action="notif-open" data-id="${n.id}"><span class="notif-ic">${icon(NICON[n.type] || 'Info')}</span><span class="notif-body"><b>${esc(n.title)}</b>${n.body ? `<span>${esc(n.body)}</span>` : ''}<span class="muted">${nwhen(n.created_at)}</span></span>${n.read_at ? '' : '<span class="notif-dot" aria-label="Unread"></span>'}</button>`;
+  return `<div class="bell-panel" role="dialog" aria-label="Notifications"><div class="bell-head"><b>Notifications</b>${btn('Mark all read', { size: 'sm', variant: 'ghost', action: 'notif-allread', disabled: !list || !list.some(n => !n.read_at) })}</div>
+    <div class="bell-list">${!list ? '<p class="muted" style="padding:16px">Loading…</p>' : list.length ? `<div class="bell-group">Latest</div>${list.map(item).join('')}` : '<p class="muted" style="padding:16px">Nothing yet. Approvals, sent-back time, assignments, due dates and budget alerts show up here.</p>'}</div></div>`;
+}
+async function loadNotifs() {
+  const r = await api('/notifications');
+  ui.notifs = r.items; S.boot.counts.notifications = r.unread;
+}
+actions['bell'] = async () => {
+  ui.bellOpen = !ui.bellOpen;
+  if (ui.bellOpen) ui.notifs = null;
+  render();
+  if (ui.bellOpen) { try { await loadNotifs(); } catch (e) { handleError(e); } if (ui.bellOpen) render(); }
+};
+actions['notif-allread'] = a => run(a, async () => {
+  const r = await api('/notifications/read', { method: 'POST', body: { all: true } });
+  S.boot.counts.notifications = r.unread; (ui.notifs || []).forEach(n => { n.read_at = n.read_at || new Date().toISOString(); }); render();
+});
+actions['notif-open'] = async a => {
+  const n = (ui.notifs || []).find(x => String(x.id) === a.dataset.id); if (!n) return;
+  ui.bellOpen = false;
+  if (!n.read_at) { try { const r = await api('/notifications/read', { method: 'POST', body: { ids: [n.id] } }); S.boot.counts.notifications = r.unread; } catch (e) { handleError(e); } }
+  if (n.link) go(n.link); else render();
+};
+document.addEventListener('click', e => { if (ui.bellOpen && !e.target.closest('.bell-wrap')) { ui.bellOpen = false; render(); } });
+// Keep the unread count fresh while the tab is open.
+setInterval(async () => {
+  if (!S.boot || document.visibilityState !== 'visible' || ui.bellOpen) return;
+  try {
+    const r = await api('/notifications?count=1');
+    // Left open overnight: reload so "today", this week and reminders move on.
+    if (r.today && r.today !== S.boot.settings.today && !ui.modal) { await refresh(); return; }
+    if (r.unread !== S.boot.counts.notifications) { S.boot.counts.notifications = r.unread; const b = document.querySelector('.bell-wrap'); if (b) b.outerHTML = bell(); } } catch { /* offline */ }
+}, 60000);
+
 export function pageHead(o) {
-  return `<header class="fc-pagehead"><div class="fc-pagehead__bar">${o.crumbs || '<span></span>'}<div class="fc-pagehead__tools"><span class="who-me muted">${esc(me().name)}, ${roleName(me().role)}</span>${btn('Sign out', { size: 'sm', variant: 'ghost', action: 'sign-out' })}</div></div>
+  return `<header class="fc-pagehead"><div class="fc-pagehead__bar">${o.crumbs || '<span></span>'}<div class="fc-pagehead__tools">${bell()}<button type="button" class="who-me fc-linkbtn muted" data-action="my-password" title="Change your password">${esc(me().name)}, ${roleName(me().role)}</button>${btn('Sign out', { size: 'sm', variant: 'ghost', action: 'sign-out' })}</div></div>
   <div class="fc-pagehead__main"><div>${o.eyebrow ? `<div class="fc-pagehead__eyebrow">${o.eyebrow}</div>` : ''}<div class="fc-pagehead__titlerow"><h1 class="fc-pagehead__title">${o.title}</h1>${o.status || ''}</div>${o.sub ? `<p class="fc-pagehead__sub">${o.sub}</p>` : ''}</div>${o.actions ? `<div class="fc-pagehead__actions">${o.actions}</div>` : ''}</div></header>`;
 }
 
@@ -177,10 +249,26 @@ export function installEvents() {
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && ui.modal && !document.querySelector('.ap-ov')) { closeModal(); }
   });
-  window.addEventListener('resize', () => { clearTimeout(window._rz); window._rz = setTimeout(render, 150); });
+  // Only redraw when the sidebar switches between full and rail; phones fire resize when the keyboard opens.
+  let lastRail = rail();
+  window.addEventListener('resize', () => {
+    clearTimeout(window._rz);
+    window._rz = setTimeout(() => { const r = rail(); if (r !== lastRail) { lastRail = r; render(); } }, 150);
+  });
 }
 
 actions['close-modal'] = () => closeModal();
+modals['password'] = () => `<form data-form="password" novalidate>${dialog('Change your password', esc(me().email || ''), `<div class="fields">
+  <div class="fc-field"><label class="fc-field__label" for="f-pcur">Current password</label><div class="fc-field__box"><input class="fc-field__input" id="f-pcur" name="pcur" type="password" autocomplete="current-password"></div></div>
+  <div class="fc-field"><label class="fc-field__label" for="f-pnew">New password</label><div class="fc-field__box"><input class="fc-field__input" id="f-pnew" name="pnew" type="password" autocomplete="new-password"></div><div class="fc-field__msg"><span>At least 8 characters.</span></div></div></div>`,
+  btn('Cancel', { action: 'close-modal' }) + btn('Change password', { variant: 'primary', type: 'submit' }), 'sm')}</form>`;
+actions['my-password'] = () => openModal({ type: 'password' });
+forms['password'] = async f => {
+  const fd = new FormData(f);
+  if (String(fd.get('pnew') || '').length < 8) return alertPopup('Choose a longer password', [['f-pnew', 'New password', 'Use at least 8 characters.']]);
+  await api('/auth/password', { method: 'POST', body: { current: fd.get('pcur'), next: fd.get('pnew') } });
+  closeModal(); toast('Password changed', 'Use it next time you sign in.');
+};
 actions['toast-x'] = a => { a.closest('.toast-wrap').innerHTML = ''; };
 actions['go'] = a => go(a.dataset.href);
 actions['nav-collapse'] = () => { localStorage.setItem('fct-rail', localStorage.getItem('fct-rail') === '1' ? '0' : '1'); render(); };

@@ -41,3 +41,9 @@ export const isISODate = s => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.tes
 
 /** Do two same-day ranges [a1,a2) and [b1,b2) overlap? Inputs in minutes. */
 export const rangesOverlap = (a1, a2, b1, b2) => a1 < b2 && b1 < a2;
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+/** 'Nov 16' and 'Nov 16, 2026' style labels, used in notifications. */
+export const shortDate = iso => { const [, m, d] = iso.split('-').map(Number); return `${MONTHS[m - 1]} ${d}`; };
+export const longDate = iso => { const [y, m, d] = iso.split('-').map(Number); return `${MONTHS[m - 1]} ${d}, ${y}`; };
+export const weekLabel = ws => `${shortDate(ws)} – ${longDate(addDays(ws, 6))}`;

@@ -32,8 +32,8 @@ async function reportRows(viewer, f) {
   if (f.clients.length) where.push(`c.id = ANY(${add(f.clients)}::uuid[])`);
   if (f.projects.length) where.push(`p.id = ANY(${add(f.projects)}::uuid[])`);
   if (f.users.length) where.push(`e.user_id = ANY(${add(f.users)}::uuid[])`);
-  if (f.billable === 'bill') where.push('t.billable');
-  if (f.billable === 'non') where.push('NOT t.billable');
+  if (f.billable === 'bill') where.push('e.billable');
+  if (f.billable === 'non') where.push('NOT e.billable');
   if (f.status === 'approved') where.push(`e.status = 'approved'`);
   else if (f.status === 'pending') where.push(`e.status <> 'approved'`);
   else if (f.status !== 'all') where.push(`e.status = ${add(f.status)}`);
@@ -51,8 +51,12 @@ r.get('/reports/time', h(async (req, res) => {
   const f = readFilters(req.query);
   const rows = await reportRows(req.user, f);
   const showValue = isAdmin(req.user) || isMgr(req.user);
+  // The person filter offers only people whose time this viewer can see in the range.
+  const people = isAdmin(req.user) ? null : (await many(
+    `SELECT DISTINCT e.user_id FROM time_entries e ${ENTRY_JOINS} WHERE e.entry_date BETWEEN $1 AND $2 AND ${visibleEntrySql(req.user, 3)}`,
+    [f.from, f.to, req.user.id])).map(r => r.user_id).concat(req.user.id);
   res.json({
-    filters: f, totals: totals(rows), showValue,
+    filters: f, totals: totals(rows), showValue, people,
     scope: isAdmin(req.user) ? 'all' : isMgr(req.user) ? 'manager' : 'member',
     entries: rows.map(e => { const o = { ...e }; if (!showValue) delete o.rate; return o; }),
   });

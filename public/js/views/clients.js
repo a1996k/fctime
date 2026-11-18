@@ -1,6 +1,6 @@
 // Clients, projects and the project task list (wireframe viewClients, viewClient, viewProjects, tasksTab).
-import { S, ui, api, isAdmin, user, userName, client, project, taskCtx, isDone, activeUsers } from '../store.js';
-import { esc, icon, btn, chip, field, inp, sel, seg, table, empty, dialog, cdot, crumbs, toast, alertPopup, hours, PSTATUS, TSTATUS, selField, avatar, dshort, swatch } from '../ui.js';
+import { S, ui, api, isAdmin, user, userName, client, project, taskCtx, isDone, activeUsers, canSetUp } from '../store.js';
+import { esc, icon, btn, gated, chip, field, inp, sel, seg, table, empty, dialog, cdot, crumbs, toast, alertPopup, hours, PSTATUS, TSTATUS, selField, avatar, dshort, swatch } from '../ui.js';
 import { views, actions, forms, modals, changes, pageHead, openModal, closeModal, refresh, render, href, route, go } from '../core.js';
 import { taskRow, budgetPill, timerButton } from './tasks.js';
 
@@ -83,10 +83,10 @@ views.project = {
       crumbs: crumbs([{ label: 'Clients', href: '#/clients' }, { label: c.name, href: href('clients', c.id) }, { label: p.name }]),
       eyebrow: `${esc(c.name)} · ${kindText(p.kind)}`, title: esc(p.name), status: projChip(p),
       sub: `${all.filter(t => !isDone(t)).length} open tasks. ${hours(logged)} of ${hours(budget)} budgeted hours logged.`,
-      actions: (isAdmin() ? btn('Edit project', { action: 'project-edit', data: { id: p.id } }) : '') + btn('Add task', { variant: 'primary', icon: 'Plus', action: 'task-new', data: { project: p.id }, disabled: !!c.archived_at }),
+      actions: (isAdmin() ? btn('Edit project', { action: 'project-edit', data: { id: p.id } }) : '') + gated('Add task', canSetUp(), 'Admins and managers add tasks', { variant: 'primary', icon: 'Plus', action: 'task-new', data: { project: p.id }, disabled: !!c.archived_at }),
     });
     const bar = `<div class="toolbar">${seg('taskview', [['list', 'List'], ['board', 'Board']], view)}${selField('task-assignee', [['all', 'Everyone'], ...activeUsers().map(u => [u.id, u.name])], fa, { change: 'task-assignee', style: 'min-width:220px' })}</div>`;
-    if (!all.length) return head + empty('Kanban View', 'No tasks yet', 'Break the work into tasks. Each one needs a service line, a time budget and a due date.', btn('Add task', { variant: 'ink', icon: 'Plus', action: 'task-new', data: { project: p.id }, disabled: !!c.archived_at }));
+    if (!all.length) return head + empty('Kanban View', 'No tasks yet', 'Break the work into tasks. Each one needs a service line, a time budget and a due date.', gated('Add task', canSetUp(), 'Admins and managers add tasks', { variant: 'ink', icon: 'Plus', action: 'task-new', data: { project: p.id }, disabled: !!c.archived_at }));
     if (view === 'board') return head + bar + board(ts);
     return head + bar + `<div class="tlist">${Object.entries(TSTATUS).map(([k, l]) => { const items = ts.filter(t => t.status === k); if (!items.length) return ''; return `<div class="tgroup" style="--g:${k === 'done' ? '#2B8A3E' : '#495057'}"><div class="tgroup-head"><b>${l}</b><span class="muted">${items.length}</span></div><div class="trows">${items.map(t => taskRow(t)).join('')}</div></div>`; }).join('')}</div>`;
   },

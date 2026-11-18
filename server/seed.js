@@ -16,12 +16,13 @@ export const DEMO_USERS = [
 ];
 
 const SERVICES = [
-  { key: 'creative', name: 'Creative', rate: 143, color: '#E8590C', manager: 'jamie' },
-  { key: 'strategy', name: 'Strategy', rate: 187, color: '#7048E8', manager: 'morgan' },
-  { key: 'development', name: 'Development', rate: 187, color: '#1C7ED6', manager: 'riley' },
-  { key: 'video', name: 'Video production', rate: 165, color: '#C2255C', manager: 'jamie' },
-  { key: 'media', name: 'Media', rate: 187, color: '#2F9E44', manager: 'chris' },
-  { key: 'ux', name: 'UX/UI', rate: 187, color: '#0C8599', manager: null },
+  // keywords match Paymo task lists on import (wireframe settings.paymo.keywords)
+  { key: 'creative', name: 'Creative', rate: 143, color: '#E8590C', manager: 'jamie', kw: 'Creative, Design, Copy' },
+  { key: 'strategy', name: 'Strategy', rate: 187, color: '#7048E8', manager: 'morgan', kw: 'Strategy, Planning' },
+  { key: 'development', name: 'Development', rate: 187, color: '#1C7ED6', manager: 'riley', kw: 'Development, Dev, Web' },
+  { key: 'video', name: 'Video production', rate: 165, color: '#C2255C', manager: 'jamie', kw: 'Video, Motion, Edit' },
+  { key: 'media', name: 'Media', rate: 187, color: '#2F9E44', manager: 'chris', kw: 'Media, Paid social, Ads' },
+  { key: 'ux', name: 'UX/UI', rate: 187, color: '#0C8599', manager: null, kw: 'UX, UI, Wireframes' },
 ];
 
 const CLIENTS = [
@@ -68,7 +69,7 @@ export async function seedDemo({ password, log = console.log } = {}) {
     const ws = weekStart(today);
     const S = {}, U = {}, C = {}, P = {}, T = {};
     let sort = 0;
-    for (const s of SERVICES) S[s.key] = (await c.one('INSERT INTO service_lines (name, rate, color, sort) VALUES ($1, $2, $3, $4) RETURNING id', [s.name, s.rate, s.color, ++sort])).id;
+    for (const s of SERVICES) S[s.key] = (await c.one('INSERT INTO service_lines (name, rate, color, sort, match_keywords) VALUES ($1, $2, $3, $4, $5) RETURNING id', [s.name, s.rate, s.color, ++sort, s.kw])).id;
     for (const u of DEMO_USERS) {
       U[u.key] = (await c.one('INSERT INTO users (name, email, role, dept_id, password_hash, capacity) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
         [u.name, u.email, u.role, u.dept ? S[u.dept] : null, pwHash, u.capacity || [480, 480, 480, 480, 480, 0, 0]])).id;

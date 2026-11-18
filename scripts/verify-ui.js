@@ -21,6 +21,32 @@ const { query, closePool } = await import('../server/db.js');
 const PW = 'fifthcolor-demo';
 const OUT = path.join(ROOT, 'verify-output');
 fs.mkdirSync(OUT, { recursive: true });
+
+// A stand-in for Paymo's API (same shapes as https://github.com/paymoapp/api) for the import steps.
+const PAYMO_KEY = 'verify-paymo-key-1';
+const { default: express } = await import('express');
+const P = {
+  users: [{ id: 11, name: 'Casey Diaz', email: 'casey@fifthcolor.example', type: 'Employee', active: true }, { id: 12, name: 'Pat Moreno', email: 'pat@fifthcolor.example', type: 'Employee', active: true }],
+  clients: [{ id: 21, name: 'Lakeside Brewing', active: true }],
+  projects: [{ id: 31, name: 'Label refresh', client_id: 21, active: true, billable: true }],
+  tasklists: [{ id: 41, name: 'Design', project_id: 31 }, { id: 42, name: 'Account management', project_id: 31 }],
+  tasks: [{ id: 51, name: 'Can label artwork', project_id: 31, tasklist_id: 41, users: [12], complete: false, due_date: null, billable: true, budget_hours: 12 },
+    { id: 52, name: 'Client calls', project_id: 31, tasklist_id: 42, users: [11], complete: false, due_date: null, billable: true, budget_hours: null }],
+  entries: [{ id: 61, task_id: 51, user_id: 12, is_bulk: false, start_time: '2026-10-06T14:00:00Z', end_time: '2026-10-06T17:00:00Z', duration: 10800, description: 'First concepts' },
+    { id: 62, task_id: 52, user_id: 11, is_bulk: true, date: '2026-10-07', duration: 2700, description: 'Kickoff call' }],
+};
+const mock = express();
+mock.use((req, res, next) => (req.headers.authorization === 'Basic ' + Buffer.from(`${PAYMO_KEY}:x`).toString('base64') ? next() : res.status(401).json({})));
+mock.get('/api/me', (_q, r) => r.json({ users: [{ email: 'admin@fifthcolor.example' }] }));
+for (const k of ['users', 'clients', 'projects', 'tasklists', 'tasks']) mock.get(`/api/${k}`, (_q, r) => r.json({ [k]: P[k] }));
+mock.get('/api/entries', (req, res) => {
+  const [, a, b] = String(req.query.where).match(/time_interval in \("([^"]+)","([^"]+)"\)/);
+  res.json({ entries: P.entries.filter(e => { const t = e.start_time || `${e.date}T00:00:00Z`; return t >= a && t < b; }) });
+});
+const paymo = mock.listen(0);
+await new Promise(r => paymo.once('listening', r));
+process.env.PAYMO_BASE_URL = `http://localhost:${paymo.address().port}/api`;
+
 await migrate({ reset: true, log: () => {} });
 const ids = await seedDemo({ password: PW, log: () => {} });
 const server = createApp().listen(0);
@@ -34,6 +60,7 @@ const errors = [];
 async function signIn(email) {
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 1000 }, acceptDownloads: true });
   const page = await ctx.newPage();
+  page.on('dialog', d => d.accept()); // "Delete…?" and "Import…?" confirmations
   page.on('pageerror', e => errors.push(`${email}: ${e.message}`));
   page.on('console', m => { if (m.type() === 'error' && !/401/.test(m.text())) errors.push(`${email}: ${m.text()}`); });
   await page.goto(BASE + '/');
@@ -65,6 +92,8 @@ try {
 
   /* 2. Team member starts a timer from Home, refreshes, stops from the sidebar */
   const casey = await signIn('casey@fifthcolor.example');
+  if (!(await casey.isDisabled('button[data-action="task-new"]'))) throw new Error('team members should not be able to add tasks');
+  step('For a team member, Add task is locked with the reason shown', await casey.getAttribute('button[data-action="task-new"]', 'title'));
   await casey.hover(`.trow[data-task="${task.id}"]`); // quick actions show on hover, as in the wireframe
   await casey.click(`.trow[data-task="${task.id}"] button[data-action="timer-go"]`);
   await casey.waitForSelector('.timer-card .big-timer');
@@ -101,11 +130,15 @@ try {
   const s = await casey.inputValue('#f-estart'), e = await casey.inputValue('#f-eend');
   await shot(casey, '03-drag-opens-form');
   step('Dragged on the calendar; the form opened with the range filled in', `${s} – ${e}`);
+  const expectOverlap = from < timerStart + te.minutes && timerStart < to;
+  if (expectOverlap) {
+    const pre = await casey.waitForSelector('#ent-overlap .fc-alert');
+    step('The form warned about the overlap before saving', (await pre.innerText()).split('\n').join(' '));
+  }
   await casey.selectOption('#f-etask', task.id);
   await casey.fill('#f-enote', 'Poster layouts');
   await casey.click('form[data-form="entry"] button[type=submit]');
   const ov = await toastText(casey);
-  const expectOverlap = from < timerStart + te.minutes && timerStart < to;
   if (expectOverlap && !/overlaps/i.test(ov)) throw new Error('expected an overlap warning, got: ' + ov);
   step(expectOverlap ? 'Saved it; the overlap warning showed and the entry was kept' : 'Saved it (timer ran outside calendar hours, so no overlap to show)', ov.split('\n')[0]);
   await closeToast(casey);
@@ -126,7 +159,16 @@ try {
   await closeToast(casey);
 
   const alex = await signIn('alex@fifthcolor.example');
-  await alex.goto(`${BASE}/#/time/approvals`);
+  // the account owner is notified, and the notification leads to the approval
+  await alex.waitForSelector('.bell-count');
+  await alex.click('button[data-action="bell"]');
+  const note = alex.locator('.notif', { hasText: 'Casey Diaz submitted' });
+  await note.waitFor();
+  await shot(alex, '05a-owner-notified');
+  const noteText = (await note.innerText()).split('\n').slice(0, 2).join(': ');
+  await note.click();
+  await alex.waitForURL(/#\/time\/approvals/);
+  step('Alex’s bell showed the submission; clicking it opened Timesheet approvals', noteText);
   const card = alex.locator('.appr', { hasText: 'Casey Diaz' }).filter({ hasText: 'Step 1 of 2' }).filter({ hasText: 'Holiday window posters' });
   await card.locator('button[data-action="reject-time"]').click();
   await alex.fill('#f-rreason', 'Please split the poster layouts from the print specs note.');
@@ -136,6 +178,15 @@ try {
   step('Account owner (Alex) sent it back with a reason');
 
   await casey.reload();
+  await casey.waitForSelector('.bell-count');
+  await casey.click('button[data-action="bell"]');
+  const back = casey.locator('.notif', { hasText: 'Your time was sent back' });
+  await back.waitFor();
+  const backText = (await back.innerText()).split('\n').slice(0, 2).join(': ');
+  if (!/Please split the poster layouts/.test(backText)) throw new Error('the reason is missing from the notification: ' + backText);
+  await back.click();
+  await casey.waitForURL(/#\/time\?week=/);
+  step('Casey’s bell showed the send-back with Alex’s reason; clicking it opened that week', backText);
   await casey.waitForSelector('.fc-alert--danger');
   await casey.click('button[data-action="seg-tsview"][data-v="list"]');
   await shot(casey, '06-sent-back-on-timesheet');
@@ -144,9 +195,11 @@ try {
   if (!(await casey.$('#f-edur'))) throw new Error('editing a total-time entry should open in Total time mode');
   await casey.fill('#f-enote', 'Print specs for the window posters');
   await casey.click('form[data-form="entry"] button[type=submit]');
-  await toastText(casey); await closeToast(casey);
+  const saved = await toastText(casey); await closeToast(casey);
+  if (!/saved/i.test(saved)) throw new Error('saving the corrected entry failed: ' + saved);
   await casey.click('button[data-action="submit-week"]');
-  await toastText(casey); await closeToast(casey);
+  const resub = await toastText(casey); await closeToast(casey);
+  if (!/submitted/i.test(resub)) throw new Error('resubmitting failed: ' + resub);
   const { rows: [fixed] } = await query(`SELECT start_time, minutes FROM time_entries WHERE note = 'Print specs for the window posters'`);
   if (fixed.start_time !== null || fixed.minutes !== 30) throw new Error('the corrected entry changed format: ' + JSON.stringify(fixed));
   step('Team member corrected the entry (it stayed a 0:30 total) and resubmitted');
@@ -186,6 +239,27 @@ try {
   if (h(csvMin) !== total || h(csvBill) !== bill) throw new Error(`report ${total}/${bill} vs CSV ${h(csvMin)}/${h(csvBill)}`);
   step('Report and CSV reconcile for Casey this week', `report ${total} h total, ${bill} h billable, ${non} h non-billable; CSV ${rows.length} rows, ${csvMin} min = ${h(csvMin)} h, billable ${csvBill} min`);
 
+  /* 6. Import from Paymo through Settings (against the stand-in Paymo API) */
+  await morgan.goto(`${BASE}/#/settings/import`);
+  await morgan.fill('#f-pkey', PAYMO_KEY);
+  await morgan.fill('#f-pfrom', '2026-10-01');
+  await morgan.fill('#f-pto', '2026-10-31');
+  await morgan.click('form[data-form="import-api"] button[type=submit]');
+  await morgan.waitForSelector('text=Check before importing');
+  const kpi = await morgan.locator('.fc-kpi').first().innerText();
+  step('Admin fetched October from Paymo; the preview opened before anything was saved', kpi.replace(/\n/g, ' '));
+  // "Account management" matches no keywords: send it to Strategy instead of the default
+  const amRow = morgan.locator('tr', { hasText: 'Account management' });
+  await amRow.locator('select').selectOption(ids.S.strategy);
+  await morgan.waitForSelector('tr:has-text("Account management") >> text=Your choice');
+  await shot(morgan, '09-import-preview');
+  await morgan.click('button[data-action="imp-commit"]');
+  await morgan.waitForSelector('text=Import finished');
+  const { rows: imp } = await query(`SELECT e.minutes, e.status, u.name AS person, t.title, s.name AS svc FROM time_entries e JOIN users u ON u.id = e.user_id JOIN tasks t ON t.id = e.task_id JOIN service_lines s ON s.id = t.service_line_id WHERE e.source = 'import' ORDER BY t.title`);
+  if (imp.length !== 2 || imp[0].svc !== 'Creative' || imp[1].svc !== 'Strategy' || !imp.every(x => x.status === 'approved')) throw new Error('import result: ' + JSON.stringify(imp));
+  await shot(morgan, '10-import-done');
+  step('Imported 2 entries: Pat Moreno added, Casey matched by email; Design went to Creative by keyword, Account management to Strategy as chosen', imp.map(x => `${x.title}, ${x.person}, ${x.minutes} min, ${x.svc}, ${x.status}`).join('; '));
+
   if (errors.length) throw new Error('Browser errors:\n' + errors.join('\n'));
   step('No browser errors');
   fs.writeFileSync(path.join(OUT, 'results.json'), JSON.stringify({ at: new Date().toISOString(), today: ids.today, steps: results }, null, 2));
@@ -197,5 +271,6 @@ try {
 } finally {
   await browser.close();
   server.close();
+  paymo.close();
   await closePool();
 }

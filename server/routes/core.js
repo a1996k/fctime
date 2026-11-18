@@ -2,21 +2,28 @@
 import { Router } from 'express';
 import { one, many, query, tx } from '../db.js';
 import { h, bad, conflict, notFound, forbidden, uuidParam, str, isUUID } from '../http.js';
-import { createSession, destroySession, verifyPassword, hashPassword, requireUser, requireAdmin, throttleLogin, clearLoginThrottle } from '../auth.js';
-import { getSettings, isAdmin, ROLES, stepScopeSql, ENTRY_JOINS } from '../domain.js';
+import { createSession, destroySession, verifyPassword, hashPassword, requireUser, requireAdmin, throttleLogin, clearLoginThrottle, checkThrottle, recordFailure } from '../auth.js';
+import { getSettings, isAdmin, isMgr, ROLES, stepScopeSql, ENTRY_JOINS, stopTimerRow } from '../domain.js';
+import { refreshAndCount } from './notifications.js';
 
 const r = Router();
 const COLOR = /^#[0-9a-fA-F]{6}$/;
 const emailOk = e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+const isRole = v => typeof v === 'string' && Object.hasOwn(ROLES, v);
+// Compared against when the email is unknown, so a wrong email takes as long as a wrong password.
+const DUMMY_HASH = hashPassword('not-a-real-password');
 
 /* ---------- auth ---------- */
 r.post('/auth/login', h(async (req, res) => {
   const email = str(req.body.email, { label: 'Email', max: 200 }).toLowerCase();
   const password = String(req.body.password || '');
-  const key = `${req.ip}|${email}`;
-  throttleLogin(key);
+  const key = `${req.ip}|${email}`, ipKey = `ip|${req.ip}`;
+  checkThrottle(key);
+  checkThrottle(ipKey, 50); // also limits one password tried across many emails
   const u = await one('SELECT id, password_hash, archived_at FROM users WHERE lower(email) = $1', [email]);
-  if (!u || u.archived_at || !(await verifyPassword(password, u.password_hash))) {
+  const okPw = await verifyPassword(password, u && u.password_hash ? u.password_hash : await DUMMY_HASH);
+  if (!u || u.archived_at || !u.password_hash || !okPw) {
+    recordFailure(key); recordFailure(ipKey);
     throw bad('That email and password don’t match.');
   }
   clearLoginThrottle(key);
@@ -24,6 +31,17 @@ r.post('/auth/login', h(async (req, res) => {
   res.json({ ok: true });
 }));
 r.post('/auth/logout', h(async (req, res) => { await destroySession(req, res); res.json({ ok: true }); }));
+/** Anyone signed in can change their own password. */
+r.post('/auth/password', requireUser, h(async (req, res) => {
+  const current = String(req.body.current || ''), next = String(req.body.next || '');
+  throttleLogin(`pw|${req.user.id}`);
+  const u = await one('SELECT password_hash FROM users WHERE id = $1', [req.user.id]);
+  if (!(await verifyPassword(current, u.password_hash))) throw bad('Your current password isn’t right.', { field: 'current' });
+  if (next.length < 8) throw bad('Use at least 8 characters for the new password.', { field: 'next' });
+  await query('UPDATE users SET password_hash = $1 WHERE id = $2', [await hashPassword(next), req.user.id]);
+  clearLoginThrottle(`pw|${req.user.id}`);
+  res.json({ ok: true });
+}));
 
 /* ---------- bootstrap ---------- */
 r.get('/bootstrap', requireUser, h(async (req, res) => {
@@ -31,7 +49,7 @@ r.get('/bootstrap', requireUser, h(async (req, res) => {
   const [settings, users, serviceLines, clients, projects, tasks, timer, apprCount, reqCount] = await Promise.all([
     getSettings(),
     many(`SELECT id, name, ${admin ? 'email,' : ''} role, dept_id, capacity, archived_at FROM users ORDER BY name`),
-    many('SELECT id, name, color, rate, manager_id, sort, archived_at FROM service_lines ORDER BY sort, name'),
+    many('SELECT id, name, color, rate, manager_id, sort, match_keywords, archived_at FROM service_lines ORDER BY sort, name'),
     many('SELECT id, name, owner_id, color, archived_at, paymo_client_id FROM clients ORDER BY name'),
     many('SELECT id, client_id, name, kind, status, paymo_project_id FROM projects ORDER BY name'),
     many(`SELECT t.id, t.project_id, t.service_line_id, t.title, t.assignee_id, t.status, t.start_date::text AS start_date,
@@ -41,14 +59,16 @@ r.get('/bootstrap', requireUser, h(async (req, res) => {
            ORDER BY t.due_date, t.title`),
     one(`SELECT id, task_id, started_at, note, (EXTRACT(EPOCH FROM started_at) * 1000)::bigint AS started_ms FROM timers WHERE user_id = $1`, [me.id]),
     one(`SELECT COUNT(DISTINCT (e.user_id, e.status, date_trunc('week', e.entry_date), CASE WHEN e.status = 'submitted' THEN c.id ELSE sl.id END))::int AS n
-           FROM time_entries e ${ENTRY_JOINS} WHERE ${stepScopeSql(me, 1)}`, admin ? [] : [me.id]),
+           FROM time_entries e ${ENTRY_JOINS} WHERE ${stepScopeSql(me, 1)}`, [me.id]),
     one(`SELECT COUNT(*)::int AS n FROM hours_requests WHERE status = 'pending' ${admin ? '' : 'AND requested_by = $1'}`, admin ? [] : [me.id]),
   ]);
+  // Bill rates are for managers and admins, as in reports.
+  if (!admin && !isMgr(me)) serviceLines.forEach(s => { delete s.rate; });
   res.json({
     me, roles: ROLES, settings: { ...settings, server_now: Date.now() },
     users, serviceLines, clients, projects, tasks,
     timer: timer ? { ...timer, started_ms: Number(timer.started_ms) } : null,
-    counts: { approvals: apprCount.n, hoursRequests: reqCount.n },
+    counts: { approvals: apprCount.n, hoursRequests: reqCount.n, notifications: await refreshAndCount(me.id) },
   });
 }));
 
@@ -63,9 +83,9 @@ r.post('/users', requireAdmin, h(async (req, res) => {
   const email = str(req.body.email, { label: 'Email', required: true, max: 200 }).toLowerCase();
   if (!emailOk(email)) throw bad('Enter a valid email address.', { field: 'email' });
   const role = req.body.role || 'member';
-  if (!ROLES[role]) throw bad('Choose a role.');
+  if (!isRole(role)) throw bad('Choose a role.');
   const dept = req.body.deptId || null;
-  if (dept && !isUUID(dept)) throw bad('Invalid department.');
+  if (dept && (!isUUID(dept) || !(await one('SELECT 1 FROM service_lines WHERE id = $1', [dept])))) throw bad('Choose a department.');
   const password = String(req.body.password || '');
   if (password.length < 8) throw bad('Set a password of at least 8 characters.', { field: 'password' });
   if (await one('SELECT 1 FROM users WHERE lower(email) = $1', [email])) throw conflict('Someone already uses that email.');
@@ -88,12 +108,15 @@ r.patch('/users/:id', requireAdmin, h(async (req, res) => {
       set('email', e);
     }
     if (b.role !== undefined && b.role !== u.role) {
-      if (!ROLES[b.role]) throw bad('Choose a role.');
+      if (!isRole(b.role)) throw bad('Choose a role.');
       if (id === req.user.id) throw bad('You can’t change your own role.');
       await assertAdminRemains(c, id, b.role, false);
       set('role', b.role);
     }
-    if (b.deptId !== undefined) { if (b.deptId && !isUUID(b.deptId)) throw bad('Invalid department.'); set('dept_id', b.deptId || null); }
+    if (b.deptId !== undefined) {
+      if (b.deptId && (!isUUID(b.deptId) || !(await c.one('SELECT 1 FROM service_lines WHERE id = $1', [b.deptId])))) throw bad('Choose a department.');
+      set('dept_id', b.deptId || null);
+    }
     if (Array.isArray(b.capacity)) {
       if (b.capacity.length !== 7 || b.capacity.some(x => !Number.isInteger(x) || x < 0 || x > 1440)) throw bad('Capacity needs 7 daily values in minutes.');
       set('capacity', b.capacity);
@@ -102,7 +125,12 @@ r.patch('/users/:id', requireAdmin, h(async (req, res) => {
       if (id === req.user.id) throw bad('You can’t archive yourself.');
       if (b.archived) await assertAdminRemains(c, id, u.role, true);
       set('archived_at', b.archived ? new Date() : null);
-      if (b.archived) await c.query('DELETE FROM sessions WHERE user_id = $1', [id]);
+      if (b.archived) {
+        await c.query('DELETE FROM sessions WHERE user_id = $1', [id]);
+        // A running timer would be stranded: save it as a draft entry they (or an admin) can see.
+        const timer = await c.one('SELECT * FROM timers WHERE user_id = $1 FOR UPDATE', [id]);
+        if (timer) await stopTimerRow(c, timer, await getSettings(c), req.user.id);
+      }
     }
     if (b.password) {
       if (String(b.password).length < 8) throw bad('Passwords need at least 8 characters.');
@@ -124,14 +152,17 @@ async function readServiceLine(b, partial) {
     if (b.managerId && !(await one('SELECT 1 FROM users WHERE id = $1 AND archived_at IS NULL', [b.managerId]))) throw bad('Choose an active person as manager.');
     o.manager_id = b.managerId || null;
   }
+  if (b.matchKeywords !== undefined) {
+    o.match_keywords = str(b.matchKeywords, { label: 'Keywords', max: 300 }).split(',').map(w => w.trim()).filter(Boolean).join(', ');
+  }
   return o;
 }
 r.post('/service-lines', requireAdmin, h(async (req, res) => {
   const o = await readServiceLine(req.body, false);
   if (await one('SELECT 1 FROM service_lines WHERE lower(name) = lower($1)', [o.name])) throw conflict('A service line with that name exists.');
-  const row = await one(`INSERT INTO service_lines (name, color, rate, manager_id, sort)
-    VALUES ($1, COALESCE($2, '#868E96'), COALESCE($3, 0), $4, (SELECT COALESCE(MAX(sort), 0) + 1 FROM service_lines)) RETURNING id`,
-    [o.name, o.color || null, o.rate ?? null, o.manager_id || null]);
+  const row = await one(`INSERT INTO service_lines (name, color, rate, manager_id, match_keywords, sort)
+    VALUES ($1, COALESCE($2, '#868E96'), COALESCE($3, 0), $4, COALESCE($5, ''), (SELECT COALESCE(MAX(sort), 0) + 1 FROM service_lines)) RETURNING id`,
+    [o.name, o.color || null, o.rate ?? null, o.manager_id || null, o.match_keywords ?? null]);
   res.status(201).json({ id: row.id });
 }));
 r.patch('/service-lines/:id', requireAdmin, h(async (req, res) => {

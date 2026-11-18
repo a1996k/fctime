@@ -1,6 +1,6 @@
 // Timesheets (wireframe viewTime round 7, calendarWeek, entryDialog round 11, timeApprovals).
 import { S, ui, api, me, isAdmin, user, userName, taskCtx, thisWeek, today, teamPeople, hasApprovals, canSeeTimesheet, capacityMinutes, openForTime, isLocked } from '../store.js';
-import { esc, icon, btn, iconBtn, chip, statusChip, alertBox, field, inp, sel, textarea, seg, tabs, table, empty, dialog, avatar, cdot, swatch, dshort, dlabel, wlabel, hours, toast, alertPopup, ESTATUS, DOW, to12, stamp, selField } from '../ui.js';
+import { esc, icon, btn, iconBtn, chip, statusChip, alertBox, field, inp, sel, textarea, seg, tabs, table, empty, dialog, avatar, cdot, swatch, dshort, dlabel, wlabel, hours, toast, alertPopup, ESTATUS, DOW, to12, stamp, selField, dayOf } from '../ui.js';
 import { views, actions, forms, modals, changes, inputs, pageHead, openModal, closeModal, refresh, render, renderModal, run, go, route, setQuery, overlapText, handleError } from '../core.js';
 import { openTasks } from './tasks.js';
 import { addDays, dow, weekStart, weekDays, hm, fromHM, toHM, parseDuration, isISODate } from '../shared/time.js';
@@ -65,8 +65,8 @@ changes['time-user'] = el => { setQuery({ user: el.value === me().id ? null : el
 
 function trail(e) {
   const bits = [];
-  if (e.ae_by_name) bits.push(`Account owner ${esc(e.ae_by_name)}, ${dshort(e.ae_at.slice(0, 10))}`);
-  if (e.dept_by_name) bits.push(`Manager ${esc(e.dept_by_name)}, ${dshort(e.dept_at.slice(0, 10))}`);
+  if (e.ae_by_name) bits.push(`Account owner ${esc(e.ae_by_name)}, ${dshort(dayOf(e.ae_at))}`);
+  if (e.dept_by_name) bits.push(`Manager ${esc(e.dept_by_name)}, ${dshort(dayOf(e.dept_at))}`);
   if (e.status === 'draft' && e.rejected_reason) bits.push(`Was sent back: ${esc(e.rejected_reason)}`);
   return bits.length ? `<span class="muted entry-trail">${bits.join(' · ')}</span>` : '';
 }
@@ -80,9 +80,13 @@ function listWeek(u, ws, es, own) {
   }).join('')}</div>`;
 }
 
-const H0 = 7, H1 = 20, PX = 52;
+const PX = 52;
 function calendarWeek(u, ws, es, own) {
   const caps = (user(u.id) || u).capacity || [];
+  // 7 AM to 8 PM, stretched to fit any earlier or later entries this week.
+  const timedAll = es.filter(e => e.start);
+  const H0 = Math.min(7, ...timedAll.map(e => Math.floor(fromHM(e.start) / 60)));
+  const H1 = Math.max(20, ...timedAll.map(e => Math.min(24, Math.ceil(Math.min(1440, fromHM(e.start) + e.minutes) / 60))));
   const cols = weekDays(ws).map(d => {
     const de = es.filter(e => e.date === d), dm = de.reduce((s, e) => s + e.minutes, 0);
     const timed = de.filter(e => e.start).map(e => ({ e, s: fromHM(e.start), m: e.minutes })), manual = de.filter(e => !e.start);
@@ -94,13 +98,13 @@ function calendarWeek(u, ws, es, own) {
     placed.forEach(p => { let i = lanesEnd.findIndex(end => end <= p.s); if (i < 0) { i = lanesEnd.length; lanesEnd.push(0); } lanesEnd[i] = p.s + p.m; p.lane = i; });
     placed.forEach(p => { p.lanes = 1 + Math.max(...placed.filter(q => q.s < p.s + p.m && p.s < q.s + q.m).map(q => q.lane)); });
     const blocks = placed.map(({ e, s, m, lane, lanes }) => {
-      const top = Math.max(0, (Math.min(s, (H1 - 0.5) * 60) - H0 * 60) / 60 * PX), h = Math.max(24, (m / 60) * PX - 2);
+      const top = ((s - H0 * 60) / 60) * PX, h = Math.max(24, (Math.min(m, H1 * 60 - s) / 60) * PX - 2);
       const pos = lanes > 1 ? `left:calc(${(lane / lanes) * 100}% + 2px);width:calc(${100 / lanes}% - 4px);right:auto;` : '';
       return `<button type="button" class="cal-ev st-${e.status}${h < 48 ? ' is-short' : ''}" style="--cc:${esc(e.client_color)};top:${top}px;height:${h}px;${pos}" data-action="${editable(e) ? 'entry-edit' : 'entry-info'}" data-id="${e.id}" title="${esc(e.task_title)}, ${hm(e.minutes)}${e.start ? `, ${e.start} – ${e.end}` : ''}, ${ESTATUS[e.status][1]}"><b>${esc(e.task_title)}</b><span>${esc(e.client_name)}</span><span>${hm(e.minutes)}${e.start ? '' : ' (by hand)'}</span></button>`;
     }).join('');
-    return `<div class="cal-col${d === today() ? ' is-today' : ''}${!caps[dow(d)] ? ' is-off' : ''}"><div class="cal-day"><span>${DOW[dow(d)]} ${+d.slice(8, 10)}</span><b class="num">${hm(dm)}</b></div><div class="cal-body" style="height:${(H1 - H0) * PX}px"${own ? ` data-cal-date="${d}" title="Click and drag to add time"` : ''}>${blocks}</div></div>`;
+    return `<div class="cal-col${d === today() ? ' is-today' : ''}${!caps[dow(d)] ? ' is-off' : ''}"><div class="cal-day"><span>${DOW[dow(d)]} ${+d.slice(8, 10)}</span><b class="num">${hm(dm)}</b></div><div class="cal-body" style="height:${(H1 - H0) * PX}px" data-h0="${H0}" data-h1="${H1}"${own ? ` data-cal-date="${d}" title="Click and drag to add time"` : ''}>${blocks}</div></div>`;
   });
-  const hoursCol = [...Array(H1 - H0)].map((_, i) => `<div class="cal-h" style="height:${PX}px">${((H0 + i - 1) % 12) + 1} ${H0 + i < 12 ? 'AM' : 'PM'}</div>`).join('');
+  const hoursCol = [...Array(H1 - H0)].map((_, i) => `<div class="cal-h" style="height:${PX}px">${((H0 + i + 11) % 12) + 1} ${H0 + i < 12 ? 'AM' : 'PM'}</div>`).join('');
   const legend = [...new Map(es.map(e => [e.client_id, e])).values()].map(e => `<span>${cdot(e.client_color)}${esc(e.client_name)}</span>`).join('');
   return `<section class="fc-card flush cal"><div class="cal-scroll"><div class="cal-grid"><div class="cal-hours"><div class="cal-day"></div>${hoursCol}</div>${cols.join('')}</div></div><div class="legend">${legend || '<span>No time this week.</span>'}<span>${own ? 'Drag on a day to add time. ' : ''}Entries added by hand are placed from 9 AM. Click one to ${own ? 'edit it' : 'see its details'}.</span></div></section>`;
 }
@@ -111,17 +115,17 @@ document.addEventListener('pointerdown', e => {
   const body = e.target.closest && e.target.closest('.cal-body[data-cal-date]');
   if (!body || e.target.closest('.cal-ev') || e.button !== 0) return;
   e.preventDefault();
-  const r = body.getBoundingClientRect(), snap = v => Math.round(v / 15) * 15;
+  const r = body.getBoundingClientRect(), snap = v => Math.round(v / 15) * 15, H0 = +body.dataset.h0, H1 = +body.dataset.h1;
   const toMin = y => Math.max(H0 * 60, Math.min(H1 * 60, H0 * 60 + snap(((y - r.top) / PX) * 60)));
   const a = toMin(e.clientY), selEl = document.createElement('div'); selEl.className = 'cal-sel'; body.appendChild(selEl);
-  calDrag = { body, a, b: a + 60, moved: false, toMin, sel: selEl, y0: e.clientY };
+  calDrag = { body, a, b: a + 60, moved: false, toMin, sel: selEl, y0: e.clientY, H0 };
   drawSel();
   body.setPointerCapture && body.setPointerCapture(e.pointerId);
 });
 function drawSel() {
   const d = calDrag; if (!d) return;
   const lo = Math.min(d.a, d.b), hi = Math.max(d.a, d.b);
-  d.sel.style.top = ((lo - H0 * 60) / 60) * PX + 'px'; d.sel.style.height = Math.max(12, ((hi - lo) / 60) * PX) + 'px';
+  d.sel.style.top = ((lo - d.H0 * 60) / 60) * PX + 'px'; d.sel.style.height = Math.max(12, ((hi - lo) / 60) * PX) + 'px';
   d.sel.innerHTML = `<b>${to12(lo)} – ${to12(hi)}</b><span>${hm(hi - lo)}</span>`;
 }
 document.addEventListener('pointermove', e => {
@@ -135,7 +139,7 @@ document.addEventListener('pointerup', () => {
   let lo = Math.min(d.a, d.b), hi = Math.max(d.a, d.b);
   if (!d.moved) { lo = d.a; hi = Math.min(24 * 60 - 15, d.a + 60); }
   setTimeout(() => d.sel.remove(), 150);
-  openModal({ type: 'entry', date: d.body.dataset.calDate, start: toHM(lo), end: toHM(hi), mode: 'range' });
+  openEntry({ date: d.body.dataset.calDate, start: toHM(lo), end: toHM(hi), mode: 'range' });
 });
 
 /* ---------- entry form: start and end, or a total ---------- */
@@ -151,13 +155,15 @@ modals['entry'] = m => {
   // Editing keeps the entry's own format; new entries remember the last one used.
   const mode = m.mode || (m.entry ? (e.start ? 'range' : 'total') : (ui.entryMode || 'range')); m.mode = mode;
   const st = m.vstart || e.start || '09:00', en = m.vend || e.end || toHM(Math.min(23 * 60 + 45, (fromHM(st) || 540) + (e.minutes || 60)));
-  const dur = Math.max(0, (fromHM(en) || 0) - (fromHM(st) || 0));
+  // Unchanged times on a saved entry show its stored minutes (timer rounding, or a timer that ran past midnight).
+  const same = m.entry && m.entry.start && st === m.entry.start && en === m.entry.end;
+  const dur = same ? m.entry.minutes : Math.max(0, (fromHM(en) || 0) - (fromHM(st) || 0));
   const sent = m.entry && m.entry.status === 'rejected' ? alertBox('danger', 'Sent back', `${esc(m.entry.rejected_reason)} (${esc(m.entry.rejected_by_name || '')}). Fix it, save, then submit the week again.`) : '';
   return `<form data-form="entry" novalidate>${dialog(m.entry ? 'Edit time' : 'Add time', 'Time goes on a task, which sets the service line and the hours it counts against.', `${sent}<div class="fields cols">
     ${field('Task', taskSelect('etask', m.vtask ?? e.task_id), { id: 'f-etask', select: true, cls: 'span' })}
     ${field('Date', inp('edate', m.vdate || e.date, { type: 'date', required: true }), { id: 'f-edate' })}
     <div class="span">${seg('emode', [['range', 'Start and end time'], ['total', 'Total time']], mode)}</div>
-    ${mode === 'range' ? `${field('Start', inp('estart', st, { type: 'time', step: 300 }), { id: 'f-estart' })}${field('End', inp('eend', en, { type: 'time', step: 300 }), { id: 'f-eend' })}<div class="span ent-dur"><span class="muted">Duration</span> <b id="ent-dur">${dur > 0 ? hm(dur) : 'End must be after start'}</b></div>`
+    ${mode === 'range' ? `${field('Start', inp('estart', st, { type: 'time', step: 300 }), { id: 'f-estart' })}${field('End', inp('eend', en, { type: 'time', step: 300 }), { id: 'f-eend' })}<div class="span ent-dur"><span class="muted">Duration</span> <b id="ent-dur">${dur > 0 ? hm(dur) : 'End must be after start'}</b></div><div class="span" id="ent-overlap" aria-live="polite">${m.overlapHtml || ''}</div>`
       : field('Total time', inp('edur', m.vdur || hm(e.minutes || 60), { placeholder: '1:30 or 1.5' }), { id: 'f-edur', msg: 'For time you didn’t clock: hours and minutes (1:30) or decimal hours (1.5).' })}
     ${field('Note', inp('enote', m.vnote ?? e.note, { placeholder: 'What you worked on' }), { id: 'f-enote', cls: 'span' })}</div>`,
   (m.entry ? `<button type="button" class="fc-btn fc-btn--danger fc-btn--md" data-action="entry-delete" style="margin-right:auto">${icon('Trash')}<span class="fc-btn__label">Delete</span></button>` : '')
@@ -170,13 +176,31 @@ function keepEntryForm() {
   if (fd.has('estart')) { m.vstart = fd.get('estart'); m.vend = fd.get('eend'); }
   if (fd.has('edur')) m.vdur = fd.get('edur');
 }
-actions['seg:emode'] = a => { keepEntryForm(); ui.modal.mode = a.dataset.v; ui.entryMode = a.dataset.v; renderModal(); };
-inputs['#f-estart, #f-eend'] = () => {
-  const a = fromHM(document.getElementById('f-estart').value), b = fromHM(document.getElementById('f-eend').value), o = document.getElementById('ent-dur');
-  if (o) o.textContent = a != null && b != null && b > a ? hm(b - a) : 'End must be after start';
+actions['seg:emode'] = a => { keepEntryForm(); ui.modal.mode = a.dataset.v; ui.entryMode = a.dataset.v; renderModal(); checkOverlap(); };
+inputs['#f-estart, #f-eend, #f-edate'] = () => {
+  const a = fromHM(document.getElementById('f-estart')?.value), b = fromHM(document.getElementById('f-eend')?.value), o = document.getElementById('ent-dur');
+  const st = document.getElementById('f-estart')?.value, en = document.getElementById('f-eend')?.value, mm = ui.modal && ui.modal.entry;
+  if (o) o.textContent = mm && mm.start && mm.start === st && mm.end === en ? hm(mm.minutes) : a != null && b != null && b > a ? hm(b - a) : 'End must be after start';
+  clearTimeout(overlapTimer); overlapTimer = setTimeout(checkOverlap, 250);
 };
-actions['entry-new'] = a => openModal({ type: 'entry', date: a.dataset.date, taskId: a.dataset.task });
-actions['entry-edit'] = a => { const e = (ui.data.entries || []).find(x => x.id === a.dataset.id); if (e) openModal({ type: 'entry', entry: e }); };
+/* Warn about overlaps while the form is open (the wireframe only warned after saving). */
+let overlapTimer = null;
+async function checkOverlap() {
+  const m = ui.modal; if (!m || m.type !== 'entry') return;
+  const date = document.getElementById('f-edate')?.value, start = document.getElementById('f-estart')?.value, end = document.getElementById('f-eend')?.value;
+  const box = document.getElementById('ent-overlap');
+  if (!box) return;
+  if (!date || fromHM(start) == null || fromHM(end) == null || fromHM(end) <= fromHM(start)) { box.innerHTML = m.overlapHtml = ''; return; }
+  try {
+    const list = await api(`/entries/overlaps?date=${date}&start=${start}&end=${end}${m.entry ? `&exclude=${m.entry.id}` : ''}`);
+    if (ui.modal !== m) return;
+    m.overlapHtml = list.length ? alertBox('warning', 'This overlaps another entry', `${overlapText(list)}. You can still save it.`) : '';
+    const el = document.getElementById('ent-overlap'); if (el) el.innerHTML = m.overlapHtml;
+  } catch { /* the save will report problems */ }
+}
+function openEntry(m) { openModal({ type: 'entry', ...m }); checkOverlap(); }
+actions['entry-new'] = a => openEntry({ date: a.dataset.date, taskId: a.dataset.task });
+actions['entry-edit'] = a => { const e = (ui.data.entries || []).find(x => x.id === a.dataset.id); if (e) openEntry({ entry: e }); };
 forms['entry'] = async f => {
   const fd = new FormData(f), m = ui.modal, mode = m.mode || 'range', miss = [];
   const body = { taskId: fd.get('etask'), date: fd.get('edate'), note: String(fd.get('enote') || '').trim() };
@@ -186,7 +210,8 @@ forms['entry'] = async f => {
     const a = fromHM(fd.get('estart')), b = fromHM(fd.get('eend'));
     if (a == null) miss.push(['f-estart', 'Start', 'When you started.']);
     if (b == null) miss.push(['f-eend', 'End', 'When you stopped.']);
-    if (a != null && b != null && b <= a) miss.push(['f-eend', 'End after start', 'The end time has to be later than the start time.']);
+    const unchanged = m.entry && m.entry.start === fd.get('estart') && m.entry.end === fd.get('eend');
+    if (a != null && b != null && b <= a && !unchanged) miss.push(['f-eend', 'End after start', 'The end time has to be later than the start time.']);
     body.start = fd.get('estart'); body.end = fd.get('eend');
   } else {
     const min = parseDuration(fd.get('edur'));
@@ -221,6 +246,7 @@ const ACTION = {
   updated: () => 'edited it', deleted: () => 'deleted it', submitted: () => 'submitted it',
   approved: h => (h.step === 'ae' ? 'approved it as account owner' : h.detail && h.detail.auto ? 'approved it as department manager too' : 'approved it as department manager'),
   returned: h => `sent it back at the ${h.step === 'ae' ? 'account owner' : 'department manager'} step`,
+  imported: h => `imported it from Paymo${h.detail && h.detail.status === 'approved' ? ' as approved' : ''}`,
 };
 actions['entry-info'] = async a => {
   const e = [...(ui.data.entries || []), ...((ui.data.approvals || []).flatMap(g => g.entries))].find(x => x.id === a.dataset.id);
@@ -253,33 +279,44 @@ function teamView() {
 function approvalsView() {
   const gs = ui.data.approvals || [];
   if (!gs.length) return empty('Check Circle', 'No time waiting for you', isAdmin() ? 'Submitted weeks show up here for the account owner, then the department manager.' : 'When someone submits time on your clients or in your department, it shows up here.');
-  const card = g => `<section class="fc-card appr" data-group="${esc(g.key)}"><div class="card-head"><div class="row" style="gap:12px">${avatar({ name: g.userName }, 40)}<div><h2>${esc(g.userName)}, ${hm(g.minutes)}</h2><p>${esc(g.scope)}. Week of ${wlabel(g.weekStart)}. ${g.step === 'ae' ? 'Step 1 of 2: account owner' : 'Step 2 of 2: department manager'}${isAdmin() ? ` <span class="muted">(${esc(g.approver)})</span>` : ''}</p></div></div>
-    <div class="row">${btn('Send back', { action: 'reject-time', data: { key: g.key } })}${btn('Approve', { variant: 'ink', icon: 'Check', action: 'approve-time', data: { key: g.key } })}</div></div>
-    ${table([{ label: 'Date', render: e => `${DOW[dow(e.date)]} ${dshort(e.date)}` }, { label: 'Task', primary: true, wrap: true, render: e => `<div class="client-cell">${esc(e.task_title)}<span class="muted">${esc(e.client_name)}, ${esc(e.project_name)}</span></div>` },
+  const card = g => {
+    const sel = selected(g), part = sel.length < g.entries.length ? ` ${sel.length} of ${g.entries.length}` : '';
+    return `<section class="fc-card appr" data-group="${esc(g.key)}"><div class="card-head"><div class="row" style="gap:12px">${avatar({ name: g.userName }, 40)}<div><h2>${esc(g.userName)}, ${hm(g.minutes)}</h2><p>${esc(g.scope)}. Week of ${wlabel(g.weekStart)}. ${g.step === 'ae' ? 'Step 1 of 2: account owner' : 'Step 2 of 2: department manager'}${isAdmin() ? ` <span class="muted">(${esc(g.approver)})</span>` : ''}</p></div></div>
+    <div class="row">${btn(`Send back${part}`, { action: 'reject-time', data: { key: g.key }, disabled: !sel.length })}${btn(`Approve${part}`, { variant: 'ink', icon: 'Check', action: 'approve-time', data: { key: g.key }, disabled: !sel.length })}</div></div>
+    ${table([{ label: '<span class="fc-sr">Include</span>', w: '44px', render: e => `<input type="checkbox" class="appr-ck" data-change="appr-ck" value="${e.id}" aria-label="Include ${esc(e.task_title)}, ${dshort(e.date)}"${ui.apprOff.has(e.id) ? '' : ' checked'}>` },
+      { label: 'Date', render: e => `${DOW[dow(e.date)]} ${dshort(e.date)}` }, { label: 'Task', primary: true, wrap: true, render: e => `<div class="client-cell">${esc(e.task_title)}<span class="muted">${esc(e.client_name)}, ${esc(e.project_name)}</span></div>` },
       { label: 'Service line', render: e => `<span class="svc-name">${swatch(e.service_line_color)}${esc(e.service_line_name)}</span>` }, { label: 'Note', wrap: true, render: e => esc(e.note) },
-      { label: 'How', render: e => (e.source === 'timer' ? 'Timer' : 'Added by hand') + (e.ae_by_name ? `<div class="muted">Owner: ${esc(e.ae_by_name)}</div>` : '') }, { label: 'Billable', render: e => (e.billable ? 'Yes' : 'No') }, { label: 'Time', num: true, render: e => hm(e.minutes) }], g.entries, { dense: true })}</section>`;
+      { label: 'How', render: e => (e.source === 'timer' ? 'Timer' : e.source === 'import' ? 'Imported' : 'Added by hand') + (e.ae_by_name ? `<div class="muted">Owner: ${esc(e.ae_by_name)}</div>` : '') }, { label: 'Billable', render: e => (e.billable ? 'Yes' : 'No') }, { label: 'Time', num: true, render: e => hm(e.minutes) }], g.entries, { dense: true })}</section>`;
+  };
   const ae = gs.filter(g => g.step === 'ae'), dp = gs.filter(g => g.step === 'dept');
   return (ae.length ? `<section class="stack-16"><h3 class="h3">As account owner <span class="muted">${ae.length}</span></h3>${ae.map(card).join('')}</section>` : '')
     + (dp.length ? `<section class="stack-16"><h3 class="h3">As department manager <span class="muted">${dp.length}</span></h3>${dp.map(card).join('')}</section>` : '');
 }
 const group = key => (ui.data.approvals || []).find(g => g.key === key);
+// Reviewers can leave entries out (ticked by default) and send back or approve only some of a week.
+ui.apprOff = ui.apprOff || new Set();
+const selected = g => g.entries.filter(e => !ui.apprOff.has(e.id));
+changes['appr-ck'] = el => { if (el.checked) ui.apprOff.delete(el.value); else ui.apprOff.add(el.value); render(); };
+/** The ids and the version of each entry the reviewer saw; the server refuses anything that changed since. */
+const decision = g => { const es = selected(g); return { step: g.step, entryIds: es.map(e => e.id), versions: Object.fromEntries(es.map(e => [e.id, e.version])) }; };
 actions['approve-time'] = a => run(a, async () => {
-  const g = group(a.dataset.key); if (!g) return;
-  const out = await api('/approvals/approve', { method: 'POST', body: { step: g.step, entryIds: g.entries.map(e => e.id) } });
+  const g = group(a.dataset.key); if (!g || !selected(g).length) return;
+  const out = await api('/approvals/approve', { method: 'POST', body: decision(g) });
   await refresh();
   toast('Time approved', g.step === 'ae' && out.fullyApproved < out.count ? 'It moves on to the department manager.' : 'It now counts as approved.');
 });
 actions['reject-time'] = a => openModal({ type: 'reject', key: a.dataset.key });
 modals['reject'] = m => {
   const g = group(m.key); if (!g) return '';
-  return `<form data-form="reject" novalidate>${dialog('Send time back', `${esc(g.userName)}, ${hm(g.minutes)}. ${esc(g.scope)}, week of ${wlabel(g.weekStart)}.`, `<div class="fields">${field('What needs fixing', textarea('rreason', '', { rows: 3, required: true, placeholder: 'For example, split the Tuesday entry between the two tasks' }), { id: 'f-rreason', msg: `${esc(g.userName.split(' ')[0])} sees this note on their timesheet.` })}</div>`,
+  const sel = selected(g), mins = sel.reduce((s, e) => s + e.minutes, 0);
+  return `<form data-form="reject" novalidate>${dialog('Send time back', `${esc(g.userName)}: ${sel.length === g.entries.length ? 'the whole week' : `${sel.length} of ${g.entries.length} entries`}, ${hm(mins)}. ${esc(g.scope)}, week of ${wlabel(g.weekStart)}.`, `<div class="fields">${field('What needs fixing', textarea('rreason', '', { rows: 3, required: true, placeholder: 'For example, split the Tuesday entry between the two tasks' }), { id: 'f-rreason', msg: `${esc(g.userName.split(' ')[0])} sees this note on their timesheet.` })}</div>`,
   btn('Cancel', { action: 'close-modal' }) + btn('Send back', { variant: 'primary', type: 'submit' }), 'sm')}</form>`;
 };
 forms['reject'] = async f => {
   const reason = String(new FormData(f).get('rreason') || '').trim();
   if (!reason) return alertPopup('Add a reason', [['f-rreason', 'What needs fixing', 'They need to know what to change before they resubmit.']]);
   const g = group(ui.modal.key);
-  await api('/approvals/return', { method: 'POST', body: { step: g.step, entryIds: g.entries.map(e => e.id), reason } });
+  await api('/approvals/return', { method: 'POST', body: { ...decision(g), reason } });
   closeModal(); await refresh();
   toast('Sent back', `${esc(g.userName)} will see your note and can fix the entries.`);
 };
