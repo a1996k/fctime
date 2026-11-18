@@ -83,3 +83,4 @@ A separate review of the milestone-1 code, made without seeing my conclusions, f
 - If the suites run within an hour of midnight in the workspace time zone, the backdated timer starts on the previous day and the date assertions fail. Rerun them after midnight.
 - The Paymo import was tested against a stand-in server built from Paymo’s published API docs, not a live Paymo account. A first real import should start with a short date range to confirm the mapping.
 - In the CSV export, the `hours` column is rounded per row; the `minutes` column is exact and is what reconciles.
+- Switching timers within the first minute still saves the first one as a draft: 1 minute, or 15 with 15-minute rounding. That’s deliberate, since the brief says a superseded timer becomes a draft entry. The person can delete it.
