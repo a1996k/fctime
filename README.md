@@ -2,18 +2,20 @@
 
 An internal web app for tracking time against FifthColor client work. Navigation, layouts, wording and visual design come from the FifthColor Studio Manager wireframe. Paymo served as the workflow reference.
 
-**First milestone (this build):** setting up work, timers, manual time entry, weekly submission with two-step approval, and hour reports with CSV export.
+**Milestone 1:** setting up work, timers, manual time entry, weekly submission with two-step approval, and hour reports with CSV export.
+**Milestone 2:** in-app notifications, importing from Paymo (API key or CSV export), and fixes from an independent review.
 
 - [Requirements map](docs/requirements-map.md): each workflow traced to its wireframe screen or function, with the rules and the assumptions made.
 - [Backlog](docs/backlog.md): the remaining wireframe features, with simulated integrations flagged for decisions.
-- [Verification](docs/verification.md): what was tested and the results.
+- [Verification](docs/verification.md): what was tested, the review findings, and the results.
 
 ## Stack
 
 - **Server:** Node.js 20+ and Express 5, with PostgreSQL 14+ through `pg`. No ORM; the schema is plain SQL in `db/migrations/`.
 - **Client:** a no-build single-page app (`public/`) that reuses the wireframe’s stylesheet, icons and component markup unchanged.
-- **Sign-in:** email and password, hashed with scrypt, with HTTP-only session cookies stored in Postgres. Mutating requests must be JSON, which blocks cross-site form posts.
+- **Sign-in:** email and password, hashed with scrypt, with HTTP-only session cookies stored in Postgres. Mutating requests must be JSON, which blocks cross-site form posts. People change their own password by clicking their name at the top of any page.
 - **Time:** durations are whole minutes. Dates and Monday-start weeks follow the workspace time zone (Settings → Company defaults, default `America/Chicago`). Stopping a timer is safe to retry: each timer creates exactly one entry (`time_entries.source_timer_id` is unique).
+- **Integrity:** each entry keeps its own service line and billable flag once submitted, so later task edits can’t move it to a different approver or change approved totals. Reviewers approve exactly the version of each entry they saw.
 
 ## Local setup
 
@@ -47,14 +49,14 @@ npm run db:reset
 npm start
 ```
 
-Open http://localhost:3000. `npm run dev` restarts the server whenever files change. Migrations also run on every `npm start`.
+Open http://localhost:3000. `npm run dev` restarts the server whenever files change. New migrations apply on every `npm start`, so an existing database upgrades in place.
 
 | Command | What it does |
 |---|---|
 | `npm run db:reset` | Drops every table in `DATABASE_URL`, migrates, and loads the demo data |
 | `npm run db:migrate` | Applies new migrations only |
-| `npm test` | API and unit tests against `TEST_DATABASE_URL` (default `fctime_test`, which is wiped) |
-| `npm run verify:ui` | Walks through the whole flow in Chromium (needs Playwright; see below) and saves screenshots to `verify-output/` |
+| `npm test` | API, import and unit tests against `TEST_DATABASE_URL` (default `fctime_test`, which is wiped) |
+| `npm run verify:ui` | Walks through the whole flow in Chromium, including a Paymo import against a stand-in Paymo server, and saves screenshots to `verify-output/` (needs Playwright; see below) |
 
 To run the browser check on your machine, install Playwright once:
 
@@ -68,8 +70,8 @@ Every demo user’s password is `fifthcolor-demo` (set `DEMO_PASSWORD` in `.env`
 
 | Person | Email | Role | Why sign in as them |
 |---|---|---|---|
-| Morgan Hale | morgan@fifthcolor.example | Admin; Strategy manager | Settings, every approval, hours requests, every report |
-| Alex Rivera | alex@fifthcolor.example | Manager | Account owner of Northwind Coffee and Pine & Co.: step-1 approvals |
+| Morgan Hale | morgan@fifthcolor.example | Admin; Strategy manager | Settings, the Paymo import, every approval, hours requests, every report |
+| Alex Rivera | alex@fifthcolor.example | Manager | Account owner of Northwind Coffee and Pine & Co.: step-1 approvals; adds tasks |
 | Sam Patel | sam@fifthcolor.example | Manager | Account owner of Harbor Health |
 | Jamie Chen | jamie@fifthcolor.example | Team Member, Creative | Creative and Video manager: step-2 approvals |
 | Casey Diaz | casey@fifthcolor.example | Team Member, Creative | Logs time; 24 h week |
@@ -77,27 +79,40 @@ Every demo user’s password is `fifthcolor-demo` (set `DEMO_PASSWORD` in `.env`
 | Taylor Kim | taylor@fifthcolor.example | Team Member, Strategy | Logs time |
 | Chris Ortega | chris@fifthcolor.example | Team Member, Media | Media manager |
 
-**A quick tour:** sign in as Casey, start a timer from Home, refresh the page, then stop it from the sidebar. Drag on the Timesheets calendar to add time, then submit the week. Sign in as Alex to approve or send it back (Timesheets → Timesheet approvals), then as Jamie for the second step. Sign in as Morgan to see Time Reports and download the CSV.
+**A quick tour:** sign in as Casey, start a timer from Home, refresh the page, then stop it from the sidebar. Drag on the Timesheets calendar to add time (the form warns if it overlaps), then submit the week. Sign in as Alex: the bell shows the submission; approve it or send it back from Timesheets → Timesheet approvals. Then sign in as Jamie for the second step. Sign in as Morgan to see Time Reports, download the CSV, and try Settings → Import from Paymo.
+
+## Importing from Paymo
+
+Settings → **Import from Paymo** (admins only). Nothing is saved until you’ve reviewed a preview.
+
+1. **Bring the data in**, one of two ways:
+   - **API key** (recommended): in Paymo, open My Account and create an API key, paste it, and choose the dates to bring over. The key is used for that fetch only and is never stored. The server must be able to reach `app.paymoapp.com`.
+   - **CSV export**: export time entries from a Paymo report, one row per entry, and upload the file. Columns are matched by name (date, person or user, email, client, project, task list, task, description, start and end time, duration, billable). You can fix the mapping and the date format on the preview.
+2. **Review the preview:**
+   - **People** are matched by Paymo id, then email, then name. For each person you can match them to someone else, add them as a new Team Member, or skip their time.
+   - **Task lists** map to service lines using the keywords on each service line (Settings → Service lines).
+   - Choose whether old time arrives **approved** (the default, which keeps history out of approval queues) or **not submitted**.
+   - The preview also shows warnings: running Paymo timers, entries with no duration, and unreadable rows.
+3. **Import.** It runs in one transaction. Records already in the app are matched and left alone, and only new ones are added, so you can import again later (for example a final top-up at cutover) without duplicates.
+
+After an import:
+- Set account owners for new clients.
+- Set roles, departments and passwords for new people. Imported people can’t sign in until an admin sets a password.
+- New tasks with no budget in Paymo get the imported time as their budget, so they start locked. You can add extra hours for open tasks on the preview.
 
 ## Project layout
 
 ```
-server/            Express app, auth, business rules (domain.js), routes/, demo seed
-db/migrations/     SQL schema
+server/            Express app, auth, business rules (domain.js), notifications (notify.js),
+                   routes/, import/ (Paymo API client, CSV parser, importer), demo seed
+db/migrations/     SQL schema, applied in order
 public/            index.html, css/fc.css (from the wireframe) + app.css, js/ (views, store, shared time helpers)
-test/              node:test API flow and unit tests
+test/              node:test API flow, import and unit tests
 scripts/           migrate, seed, verify-ui (Playwright walk-through)
 docs/              requirements map, backlog, verification
 ```
 
-## Paymo data
+## Notes
 
-Nothing from Paymo is needed for this milestone; it runs on demo data. The import is the next step, and the tables already have `paymo_*_id` columns so imports can be re-run without duplicates. When you’re ready to migrate, send either a **read-only Paymo API key** (best: it lets the import re-run for a final top-up at cutover) or these CSV exports:
-
-1. **Users:** name, email, active or not. Also say which role each person should have here, and their department.
-2. **Clients:** Paymo client ID and name. Also say who the account owner is for each.
-3. **Projects:** Paymo project ID, name, client, active or archived, and retainer or project.
-4. **Task lists and tasks:** task ID, name, project, task list, assignees, due date, budget hours, billable flag. Also say how task lists map to service lines (the wireframe matched them by keyword, for example “Design, Copy → Creative”).
-5. **Time entries** for the history you want to keep: entry ID, date, start and end (or duration), user, task, description, billable or billed flag.
-
-Also needed: the earliest date to bring over (the wireframe assumed January 2026), the time zone your Paymo account uses, and whether imported history should land as already **approved**.
+- In the CSV export, the `minutes` column is exact. The `hours` column is rounded per row, so its total can differ from the report by a hundredth; use minutes when reconciling.
+- `PAYMO_BASE_URL` overrides the Paymo API address. The tests use it to point at a stand-in server.

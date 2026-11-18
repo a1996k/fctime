@@ -56,7 +56,28 @@ export async function fetchPaymo({ apiKey, from, to, log }) {
     entries.push(...(r.entries || []));
   }
   const byId = new Map(entries.map(e => [e.id, e]));
-  return { account: (me.users && me.users[0] && me.users[0].email) || null, fetchedAt: new Date().toISOString(), from, to, users, clients, projects, tasklists, tasks, entries: [...byId.values()] };
+  const out = { account: (me.users && me.users[0] && me.users[0].email) || null, fetchedAt: new Date().toISOString(), from, to, users, clients, projects, tasklists, tasks, entries: [...byId.values()] };
+  await fillMissing(apiKey, out, log);
+  return out;
+}
+
+/**
+ * Paymo's list endpoints may leave out archived records. Fetch anything the time entries point at
+ * that didn't come back (tasks, then their projects and task lists, then clients and people) by id.
+ */
+async function fillMissing(apiKey, d, log) {
+  const missing = (list, wanted) => { const have = new Set(list.map(x => x.id)); return [...new Set(wanted.filter(id => id != null && !have.has(id)))]; };
+  const fetchIds = async (kind, ids) => {
+    for (let i = 0; i < ids.length; i += 100) {
+      const where = encodeURIComponent(`id in (${ids.slice(i, i + 100).join(',')})`);
+      try { d[kind].push(...((await get(apiKey, `/${kind}?where=${where}`, { log }))[kind] || [])); } catch (e) { if (/API key/.test(e.message)) throw e; /* leave them missing; the preview lists them */ }
+    }
+  };
+  await fetchIds('tasks', missing(d.tasks, d.entries.map(e => e.task_id)));
+  await fetchIds('projects', missing(d.projects, d.tasks.map(t => t.project_id)));
+  await fetchIds('tasklists', missing(d.tasklists, d.tasks.map(t => t.tasklist_id)));
+  await fetchIds('clients', missing(d.clients, d.projects.map(p => p.client_id)));
+  await fetchIds('users', missing(d.users, d.entries.map(e => e.user_id)));
 }
 
 /** A UTC timestamp as a date and clock time in the workspace time zone. */

@@ -1,61 +1,85 @@
-# Verification: first milestone
+# Verification
 
-Run on 2026-11-18 against PostgreSQL 16 and Node 22, workspace time zone America/Chicago, with the seeded demo users. Both suites wipe and reseed their own database (`fctime_test`).
+Run on 2026-11-18 against PostgreSQL 16 and Node 22, workspace time zone America/Chicago, with the seeded demo users. Each suite wipes and reseeds its own database (`fctime_test`).
 
-## Browser walk-through: `npm run verify:ui`
+## Browser walk-through: `npm run verify:ui` (21 checks, all passing)
 
-The script drives the real UI in Chromium. To make the timer show a realistic duration, it backdates the running timer in the database by 52 minutes; every other step is a click or a keystroke.
+The script drives the real UI in Chromium. To give the timer a realistic duration, it backdates the running timer in the database by 52 minutes; every other step is a click or a keystroke. The Paymo steps run against a stand-in Paymo server that answers in the same shapes as Paymo's API.
 
 | # | Step | Result |
 |---|---|---|
-| 1 | Morgan (admin) creates “Holiday window posters” on Northwind Coffee › Retainer: Creative, Casey, 3 h budget, due today | Saved; budget stored as **180 minutes** |
-| 2 | Casey starts a timer from the task row on Home | Timer card and sidebar show it running |
-| 3 | Casey refreshes the page | Timer restored from the server, showing **0:52:00** |
-| 4 | Casey stops it from the sidebar | “Logged 0:52”; exactly **one** draft entry of 52 min, with start and end times |
-| 5 | Casey drags 2:00–3:00 PM on today’s calendar column | Entry form opens with **14:00 – 15:00** filled in |
-| 6 | Saves it | “This overlaps another entry … It was saved anyway.”; both entries kept, shown side by side |
-| 7 | Adds 0:30 as a total duration | Saved |
-| 8 | Submits the week | “Week submitted, 2:22” |
-| 9 | Alex (Northwind’s account owner) sends it back with a reason | Entries marked Sent back; reason shown on Casey’s timesheet |
-| 10 | Casey edits the 0:30 entry and resubmits | Entry stays a 0:30 total; all entries go back to Waiting for account owner |
-| 11 | Alex approves (step 1 of 2) | “It moves on to the department manager.” |
-| 12 | Jamie (Creative department manager) approves (step 2 of 2) | “It now counts as approved.” |
-| 13 | Database check | All 3 entries `approved`, with `ae_by` Alex Rivera and `dept_by` Jamie Chen and both timestamps |
-| 14 | Morgan opens Time Reports for this week, filtered to Casey, and downloads the CSV | Report: **2.37 h** total, 2.37 h billable, 0 h non-billable. CSV: 3 rows, **142 min** (52 + 60 + 30) = 2.37 h, billable 142 min. **They match.** |
-| 15 | Console | No browser errors |
+| 1 | Morgan (admin) creates “Holiday window posters” on Northwind Coffee › Retainer: Creative, Casey, 3 h, due today | Saved; budget stored as **180 minutes** |
+| 2 | Casey opens Home | **Add task** is locked for her (“Admins and managers add tasks”) |
+| 3 | Casey starts a timer from the task row, then refreshes the page | Timer restored from the server, showing **0:52:00** |
+| 4 | Casey stops it from the sidebar | “Logged 0:52”; exactly **one** draft entry, with start and end |
+| 5 | Casey drags 3:00–4:00 PM on today’s calendar column | The form opens with **15:00 – 16:00** filled in and **warns about the overlap before saving** |
+| 6 | Saves it, then adds 0:30 as a total | Both saved; the overlap warning shows again after saving |
+| 7 | Submits the week | “Week submitted, 2:22” |
+| 8 | Alex signs in | His **bell** shows “Time to approve: Casey Diaz submitted 2:22 on Northwind Coffee…”; clicking it opens Timesheet approvals |
+| 9 | Alex sends it back with a reason | Entries marked Sent back |
+| 10 | Casey reloads | Her bell shows “Your time was sent back: Alex Rivera: Please split…”; clicking it opens that week |
+| 11 | Casey edits the 0:30 entry and resubmits | Entry stays a 0:30 total; back to Waiting for account owner |
+| 12 | Alex approves (step 1), Jamie approves (step 2) | All 3 entries `approved`, with `ae_by` Alex Rivera and `dept_by` Jamie Chen |
+| 13 | Morgan’s report for Casey this week, and its CSV | Report **2.37 h**; CSV 3 rows, **142 min**. **They match.** |
+| 14 | Morgan fetches October from Paymo with an API key | The preview opens before anything is saved: 2 entries, 3.75 h |
+| 15 | Changes the “Account management” task list to Strategy, then imports | 2 entries imported as approved. Pat Moreno is added; Casey is matched by email; Design → Creative by keyword; Account management → Strategy as chosen |
+| 16 | Console | No browser errors |
 
-The CSV it downloaded:
+Screenshots: [Home with timer](screenshots/home-timer.png), [calendar drag](screenshots/calendar-drag.png), [notifications](screenshots/notifications.png), [manager approval](screenshots/approvals.png), [report](screenshots/report.png), [import preview](screenshots/import-preview.png). The script saves a full set to `verify-output/`.
 
-```
-date,client,project,service_line,task,person,start,end,minutes,hours,billable,approval_status,source,note
-2026-11-18,Northwind Coffee,Retainer,Creative,Holiday window posters,Casey Diaz,14:00,15:00,60,1.00,yes,Approved,manual,Poster layouts
-2026-11-18,Northwind Coffee,Retainer,Creative,Holiday window posters,Casey Diaz,14:35,15:27,52,0.87,yes,Approved,timer,
-2026-11-18,Northwind Coffee,Retainer,Creative,Holiday window posters,Casey Diaz,,,30,0.50,yes,Approved,manual,Print specs for the window posters
-```
+## API, import and unit tests: `npm test` (23 tests, all passing)
 
-Screenshots: [Home with timer](screenshots/home-timer.png), [calendar drag](screenshots/calendar-drag.png), [manager approval](screenshots/approvals.png), [report](screenshots/report.png). The script saves a full set to `verify-output/`.
+**`test/flow.test.js`** covers the whole milestone through the API, plus the rules a browser can’t prove:
 
-## API and rules: `npm test` (13 tests, all passing)
+- **Guards and setup:** sign-in, JSON-only writes, and admin-only setup. Task creation and editing are limited to admins and managers; the person responsible can change only status and notes; budgets are capped.
+- **Timer:** retried starts and stops. Two simultaneous stops plus a retry give one entry. Rounding applies. Starting another timer saves the running one as a draft. A timer blocks submitting only the week it lands in. Someone else’s timer id reveals nothing.
+- **Manual entries:**
+  - Duration formats, the end-after-start rule, and overlaps (with no false overlaps from zero-length or past-midnight timer entries).
+  - Budget locks block only added minutes, so over-budget time can be corrected.
+  - Timer rounding survives a note-only edit, and dates can’t be more than a week ahead.
+- **More hours:** the request and approval flow. Two requests sent at once yield one.
+- **Approvals:**
+  - Routing to the account owner, then the department manager, with send-back reasons and resubmission, and the full audit trail.
+  - Stale decisions are refused, and repeating a decision is refused.
+  - Wireframe exceptions: no owner means admins approve, and one person can complete both steps.
+  - No self-approval: a manager’s own time goes to admins with a clear label, and an admin’s own time goes to another admin.
+- **Frozen routing:** the review’s hijack scenario. Moving a task to another service line after submission doesn’t move its submitted time, and approved billable totals don’t change when the task’s billable flag does.
+- **Reports:** for six combinations of user and filter, CSV rows, minutes and billable minutes equal the report totals. Each role sees only what it should, including the task time log.
+- **Notifications:** each event reaches the right person once, and people can’t mark others’ notifications read.
+- **People and sign-in:** role and department validation, bill rates hidden from team members, changing your own password, and archiving someone saves their running timer as a draft.
 
-`test/flow.test.js` runs the same flow through the API, plus the rules a browser can’t prove:
+**`test/import.test.js`** runs the Paymo import against a stand-in Paymo API and a CSV export:
 
-- **Guards:** signed-out requests get 401; form-encoded posts get 415 (CSRF); non-admins don’t receive colleagues’ email addresses.
-- **Setup:** non-admins get 403 when creating clients, projects, service lines or role changes. A client can have several projects, with names unique per client. Tasks require a time budget and a due date. Only admins change a budget after a task is created.
-- **Timer:** retrying a start doesn’t restart the timer. A second session sees the running timer. **Two simultaneous stops plus a late retry produce one entry**, and all three return its id. 47 minutes rounds up to 60 with 15-minute rounding. Starting another timer saves the running one as a draft. Submitting is blocked while a timer runs in the week.
-- **Manual entries:** rejects junk durations and an end before the start; reports overlaps but saves the entry; blocks time over the budget (409 `budget_locked`).
-- **More hours:** the timer is locked at the budget. Staff can’t add hours themselves; their request goes to an admin, and approval raises the budget and logs it. The task’s time log shows team members only their own entries, while the total counts everyone.
-- **Approvals:** step 1 is offered only to the client’s account owner; the department manager and other owners don’t see it. A reviewer can’t approve their own time. A reason is required to send time back. Returned entries record who, when, which step and why. Edited entries go back to draft; resubmitting clears the reason. Repeating a decision returns 409. Step 2 goes to the service line’s manager. The audit trail reads: created → submitted → returned (Alex) → updated → submitted → approved step 1 (Alex) → approved step 2 (Jamie).
-- **Wireframe exceptions:** with no account owner, admins approve step 1, and an admin who also manages the service line completes both steps at once. A department manager’s own time is not offered to them at step 2, and an admin can approve it.
-- **Reports:** for six combinations of user and filter, the CSV row count, minutes and billable minutes equal the JSON totals. Casey sees only her own time, and filtering for someone else returns nothing. Jamie sees Creative time but not Strategy. Timesheet access follows the wireframe’s `canSeeTimesheet`.
+- **Access and keys:** admins only, and a wrong key is reported clearly.
+- **Fetching:** entries come month by month, with the rate-limit retry exercised.
+- **Matching:** people by email, clients and projects by name, task lists by keyword or the admin’s choice.
+- **What’s left out:** running Paymo timers, entries with no duration, and guests.
+- **Conversion:** UTC times land in Chicago time, and HTML is stripped from descriptions.
+- **Re-runs:** importing again adds only what’s new; a third run has nothing to import.
+- **CSV:** columns are detected; identical rows stay distinct; the same file imported again adds nothing, even after remapping the description column. Imported people can’t sign in until given a password.
 
-`test/time.test.js` covers the duration parser (`1:30`, `1.5`, `1.5h`, `90m`), rounding, Monday weeks, and the time and date helpers.
+**`test/time.test.js`** covers the duration parser, rounding, Monday weeks and the time helpers.
 
-## Also checked by hand
+## Independent review
 
-- Phone width (390 px): no sideways scroll on Home, Timesheets, Reports, Clients, Projects or Hours requests. Task rows and entries wrap under their titles.
-- Admin screens (Settings › People, Service lines, Company defaults), the project board, the task dialog with its time budget, and Team timesheets render with the wireframe’s components.
+A separate review of the milestone-1 code, made without seeing my conclusions, found 1 high, 7 medium and several low issues. All were fixed in milestone 2, with a regression test for each where one applies:
+
+| Finding | Fix |
+|---|---|
+| **High:** anyone could edit any task, rerouting submitted time to their own approval queue or changing approved billable totals | Task permissions; each entry freezes its service line and billable flag when submitted |
+| Admin couldn’t open entry History (server error) | Query parameters fixed |
+| A sent-back entry over its budget couldn’t be corrected | Only added minutes count against the budget |
+| A reviewer could approve time that changed after they loaded it | Decisions carry each entry’s version; stale ones are refused |
+| Anyone could create a high-budget task to sidestep the hours request | Only admins and managers create tasks; budgets capped |
+| Editing a timer entry lost its rounding | Unchanged times keep the stored minutes |
+| Zero-length and past-midnight timer entries broke overlaps and re-saving | Overlaps use start plus duration; unchanged times can be re-saved |
+| Saving settings could silently change the time zone | The saved zone is always listed, and the zone is sent only when changed |
+| The “stop your timer” guard checked today’s week, not the timer’s | It checks the week the timer’s time lands in |
+| Admins approved their own time end to end | Another admin approves it while one exists |
+| Smaller items: misleading approver label, bill rates visible to team members, the calendar misdrawing out-of-hours entries, UTC timestamps, duplicate hours requests, someone else’s timer id revealing their timer, server errors on bad input, far-future dates, a possible approval deadlock, the sign-in throttle, no way to change your own password, an archived person’s orphaned timer, “today” going stale overnight | All fixed |
 
 ## Known limits
 
-- The calendar shows 7 AM to 8 PM, as in the wireframe. Time outside those hours appears in List view.
 - If the suites run within an hour of midnight in the workspace time zone, the backdated timer starts on the previous day and the date assertions fail. Rerun them after midnight.
+- The Paymo import was tested against a stand-in server built from Paymo’s published API docs, not a live Paymo account. A first real import should start with a short date range to confirm the mapping.
+- In the CSV export, the `hours` column is rounded per row; the `minutes` column is exact and is what reconciles.

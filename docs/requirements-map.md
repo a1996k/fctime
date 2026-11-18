@@ -85,16 +85,66 @@ All rules run on the server. `lockForDecision` re-checks every entry inside a tr
 | Total, billable, non-billable | KPI tiles in `viewReports` (5041) | Tiles plus a grouped tree (up to three levels) |
 | CSV | `rbCsv` (5074) | `GET /api/reports/time.csv`, one row per entry, with minutes and hours. It uses the same query as the on-screen report, so totals match to the minute. |
 
+## Milestone 2
+
+### Notifications (wireframe `notify` 3700, `bell` 3728, `bellPanel` 3732, `openNotifLink` 3739, `runChecks` 4283)
+
+| Event | Who is told | Link |
+|---|---|---|
+| A week is submitted | Each client’s account owner, or admins if the client has no owner or it’s the owner’s own time | Timesheet approvals |
+| Step 1 approved | The service line’s department manager, or admins if none or it’s their own time | Timesheet approvals |
+| Time sent back | The person, with the reviewer’s reason | That week’s timesheet |
+| Time fully approved | The person | That week’s timesheet |
+| More hours requested | Admins | Hours requests |
+| Request approved or declined, or hours added | The requester and the person responsible | The task |
+| Task assigned by someone else | The new assignee | The task |
+| Budget passes the alert percent, or locks at 100% | The assignee; admins too when it locks (once per budget) | The task |
+| Task due within two days, or overdue | The assignee, once per due date (created when they open the app) | The task |
+
+Nobody is notified of their own action. Unread counts refresh every minute. Email delivery stays a separate decision (see the backlog).
+
+### Paymo import (wireframe `viewImport` 2368, `buildImport` 2381, `settings.paymo` in `seed`, `paymoProjectOptions` 2167)
+
+- **Sources:**
+  - The Paymo API v3, using Basic auth with the API key as the username, month-sized `time_interval` windows, and Retry-After handling.
+  - A Paymo CSV export, with columns matched by name and adjustable on the preview.
+- **Staging:** a run is staged in `import_runs` and previewed. Nothing is written until the admin imports.
+- **Matching:** each record is matched by Paymo id, then by name (or email for people). Matched records are never changed. Entries are de-duplicated by `paymo_entry_id`, or for CSV rows by a hash of date, person, task, times and duration.
+- **Service lines:** task lists map by each service line’s keywords, and the admin can override any of them. Tasks without a task list match by task name; anything left over goes to a default.
+- **What comes over:**
+  - Open tasks, plus any task with time in the range.
+  - New tasks get Paymo’s due date (otherwise the last logged day) and Paymo’s budget (otherwise the imported time, plus optional extra hours for open tasks).
+  - New people arrive as Team Members with no password; people inactive in Paymo arrive archived.
+  - Imported time arrives approved (the default) or not submitted. Each entry gets an `imported` audit event.
+
 ## Assumptions and open decisions
 
 1. **Stack.** The repo was empty, so this is a new project: Node + Express + PostgreSQL, with a no-build single-page app that reuses the wireframe’s CSS, icons and component markup unchanged.
-2. **Workspace time zone** defaults to `America/Chicago` (the wireframe’s `paymo.tz`) and is admin-editable. “Today”, timer dates and Monday-start weeks use it. Changing it doesn’t move saved entries.
-3. **Timer entry date** is the day the timer *started* (the wireframe used the stop day). A timer that runs past 24 hours is saved as 24:00, with a warning to fix it.
-4. **Rounding** rounds the duration up; the start and end clock times stay as recorded (same as the wireframe).
+2. **Workspace time zone** defaults to `America/Chicago` (the wireframe’s `paymo.tz`) and is admin-editable. “Today”, timer dates, Monday-start weeks and displayed timestamps use it. Changing it doesn’t move saved entries.
+3. **Timer entry date** is the day the timer *started* (the wireframe used the stop day). A timer that runs past 24 hours is saved as 24:00, with a warning to fix it. A running timer blocks submitting only the week it will land in.
+4. **Rounding** rounds the duration up; the start and end clock times stay as recorded (same as the wireframe). Editing an entry without changing its times keeps the rounded minutes.
 5. **Assignee is required** on tasks, because this brief lists it. The wireframe allowed “Unassigned.”
-6. **Only admins change a time budget after a task is created.** The wireframe let anyone raise an unlocked task’s budget, which would bypass the request-and-approve flow. Whoever creates a task sets its first budget, and anyone can create tasks (as in the wireframe).
-7. **No self-approval for non-admins** (not covered by the wireframe). A reviewer’s own time goes to an admin. Admins may approve their own time, and it is logged.
-8. **Report visibility** (the wireframe showed everyone all time): admins see everything; Managers and Account Executives see everyone except admins, plus time on their clients; team members see their own time, plus time on clients they own and in departments they manage. The CSV uses the same rule. Bill-rate value shows to managers and admins only; cost and margin are in the backlog.
-9. **Board columns are fixed** to the wireframe defaults. Custom columns per project are in the backlog.
-10. **Who can see what in setup:** everyone signed in can see all clients, projects and tasks (as in the wireframe). Only admins can change setup.
-11. **Sign-in** is email and password, with server sessions in Postgres. SSO (Google Workspace) would be a separate decision.
+6. **Setting up tasks is for admins and managers** (changed after review). In the wireframe anyone could add or edit tasks, which let staff sidestep the hours-request approval with a new high-budget task, and let anyone reroute or re-bill submitted time.
+   - Admins and Managers/Account Executives create tasks and edit their details.
+   - Only admins change a budget after creation; budgets are capped at 10,000 hours.
+   - The person responsible can change status and notes.
+   - Everyone can still see tasks and log time on open ones.
+7. **Nobody approves their own time** (not covered by the wireframe):
+   - A reviewer’s own time goes to admins, and the approvals list says so.
+   - An admin’s own time goes to another active admin. Only a sole admin may approve their own time, since nobody else could.
+8. **Submitted time is frozen** (added after review). Each entry keeps its service line (which decides the department manager) and billable flag from submission, while the client stays fixed through its project. Task edits change only time that hasn’t been submitted yet. Reviewers act on the exact version of each entry they saw, and anything changed since is refused.
+9. **Overlap warning** appears in the form as soon as the times overlap, and again after saving. Saving is always allowed. The wireframe only warned after saving.
+10. **Budget checks** block only added minutes. An entry already over budget (a timer can run past the limit) can still be corrected or reduced.
+11. **Report visibility** (the wireframe showed everyone all time):
+    - Admins see everything.
+    - Managers and Account Executives see everyone except admins, plus time on their clients.
+    - Team members see their own time, plus time on clients they own and in departments they manage.
+    - The CSV, the person filter and the task time log follow the same rule. Bill rates and bill-rate value show only to managers and admins; cost and margin are in the backlog.
+12. **Board columns are fixed** to the wireframe defaults. Custom columns per project are in the backlog.
+13. **Setup is visible to everyone signed in:** all clients, projects and tasks, as in the wireframe. Only admins change people, service lines, clients, projects and settings.
+14. **Sign-in** is email and password, with server sessions in Postgres:
+    - Failed attempts are throttled per email and per network address.
+    - Unknown emails take as long to reject as wrong passwords.
+    - People change their own password.
+    - SSO (Google Workspace) and password reset by email would be separate decisions.
+15. **Dates** can’t be logged more than a week ahead.

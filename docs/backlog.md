@@ -6,9 +6,9 @@ Each line names the wireframe function(s) to trace when the work starts. The sch
 
 | Feature | What the wireframe shows | Decision needed |
 |---|---|---|
-| **Paymo sync** | Settings → Integrations: connect with an API key, webhook plus nightly reconcile at 02:00, map tasks to service lines by task-list keywords, a queue of new Paymo projects to accept, an unmatched-time review, a lock after 5 days. The connection test only fakes a `GET /api/me` (`paymo-test` action, `paymoProjectOptions` 2167, `settings.paymo` in `seed`). | One-time migration or ongoing two-way sync? If ongoing, which system is the source of truth for tasks and time? Webhooks need a public HTTPS URL. |
+| **Ongoing Paymo sync** | Settings → Integrations: connect with an API key, webhook plus nightly reconcile at 02:00, map tasks to service lines by task-list keywords, a queue of new Paymo projects to accept, an unmatched-time review, a lock after 5 days. The connection test only fakes a `GET /api/me` (`paymo-test` action, `paymoProjectOptions` 2167, `settings.paymo` in `seed`). **Built in milestone 2:** a one-time and re-runnable *import* (API key or CSV) with keyword mapping and a preview. | Is an import enough for the move, or is an ongoing sync wanted? If ongoing, which system is the source of truth for tasks and time? Webhooks need a public HTTPS URL. |
 | **BambooHR sync** | Pulls approved time off into scheduling and timesheets (`bambooSync` 4427, Settings → Integrations). Marked “Connected (simulated)”. | Whether to adopt it, who owns the API key (`BAMBOOHR_API_KEY`), and how people are matched (by email). |
-| **Email delivery** (scheduled report emails, “Send test”) | `viewEmails` (5367), `emailDialog` (5387); the test send is simulated. | Provider (Postmark, SES, Google Workspace SMTP), sender domain, unsubscribe and bounce handling. |
+| **Email delivery** (scheduled report emails, “Send test”, notification emails) | `viewEmails` (5367), `emailDialog` (5387), `prefsDialog` (3748); the test send is simulated. In-app notifications are built (milestone 2); nothing is emailed. | Provider (Postmark, SES, Google Workspace SMTP), sender domain, per-person email preferences, unsubscribe and bounce handling. |
 | **Contract reader (Claude)** | Reads contract PDFs to prefill retainers (`readPdf`, `buildPrompt`, `normalize`); has a simulated sample result. | Whether to send contracts to the Claude API, data retention, and the model (the wireframe offers Sonnet 5.5, Opus 5.5 and Haiku 5.5). |
 
 ## Product features
@@ -33,17 +33,21 @@ Each line names the wireframe function(s) to trace when the work starts. The sch
 - Hourly cost per person and margin, shown to admins only (`deptCost`, `projMargin`, `marginCard`).
 
 **Imports**
-- **Historical CSV import** of monthly hours with a preview, plus backfill from a set month (`viewImport` 2368, `parseCSV`, `buildImport`, `importPreview`, `paymo.backfill`).
-- A one-time Paymo data import into the current schema; see “Paymo data” in the README.
+- **Historical CSV import of monthly totals** (the wireframe’s retainer-hours import: `viewImport` 2368, `buildImport`, `importPreview`, `paymo.backfill`). It belongs with retainer accounting. Entry-level history from Paymo is already covered by the milestone 2 import.
 
 **Tasks and collaboration**
 - Informed followers, checklists, subtasks, files, comments with @mentions, recurring tasks, priority flags (`taskDialog` 5199, `postComment`, `mentionsIn`, `RECUR`, `PRIO`).
 - Custom board columns per project and drag between columns (`colsDialog`, `readCols`, board drag handlers).
-- Notifications bell, preferences and due/budget alerts (`notify`, `runChecks`, `bell`, `bellPanel`, `prefsDialog`). Approval routing works today without notifications; reviewers see counts on the Timesheets nav item.
+- Notification extras: @mentions and comment notices come with comments; email delivery waits on the provider decision above. The bell, approval, hours, assignment, budget and due-date notices are built.
 - Favorite Home filters, sidebar shortcuts, client timeline (`favMenu`, `shortcutDialog`, `viewClientTimeline`), project notes and meetings (`projectNotes`, `meetingDialog`).
 
 **Reports**
 - Saved reports, PDF export, value/cost/margin columns, an archived-people toggle, grouped CSV (`rbPdf`, `rbCsv` grouped mode, `state.reports`).
+
+**Timesheets and audit (raised in review)**
+- A way for admins to reopen approved time with a reason (today approved time is final; corrections need a new entry).
+- An admin view of the audit trail for deleted entries (events are kept but there’s no screen for them).
+- A configurable lock on late edits (wireframe `paymo.lockDays`, `lateEntries`).
 
 **Platform**
 - Theme switch (light, dark, high contrast); the tokens are already in `fc.css`, and the app follows the system setting.

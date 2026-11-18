@@ -35,6 +35,8 @@ const P = {
     { id: 1002, name: 'Homepage build', project_id: 802, tasklist_id: 902, users: [502], complete: false, due_date: '2026-12-01', billable: true, budget_hours: 20 },
     { id: 1003, name: 'Old finished thing', project_id: 802, tasklist_id: 902, users: [502], complete: true, due_date: null, billable: true, budget_hours: 5 },
     { id: 1004, name: 'Timesheets admin', project_id: 803, tasklist_id: 903, users: [], complete: false, due_date: null, billable: false, budget_hours: null },
+    // archived: left out of the plain list, returned only when asked for by id
+    { id: 1005, name: 'Archived banner work', project_id: 802, tasklist_id: 902, users: [502], complete: true, due_date: '2026-11-13', billable: true, budget_hours: 2, hidden: true },
   ],
   entries: [
     { id: 5001, task_id: 1002, user_id: 502, is_bulk: false, start_time: '2026-11-10T15:00:00Z', end_time: '2026-11-10T17:30:00Z', duration: 9000, description: 'Hero section' },
@@ -44,6 +46,7 @@ const P = {
     { id: 5005, task_id: 1002, user_id: 502, is_bulk: false, start_time: '2026-11-13T15:00:00Z', description: 'still running' },
     { id: 5006, task_id: 1002, user_id: 502, is_bulk: true, date: '2025-06-01', duration: 3600, description: 'out of range' },
     { id: 5007, task_id: 1004, user_id: 504, is_bulk: true, date: '2026-11-12', duration: 0, description: 'zero' },
+    { id: 5008, task_id: 1005, user_id: 502, is_bulk: true, date: '2026-11-13', duration: 3600, description: 'Banner' },
   ],
 };
 function mockPaymo() {
@@ -54,7 +57,12 @@ function mockPaymo() {
     next();
   });
   m.get('/api/me', (_q, r) => r.json({ users: [{ id: 1, email: 'owner@fifthcolor.example' }] }));
-  for (const k of ['users', 'clients', 'projects', 'tasklists', 'tasks']) m.get(`/api/${k}`, (_q, r) => r.json({ [k]: P[k] }));
+  for (const k of ['users', 'clients', 'projects', 'tasklists', 'tasks']) {
+    m.get(`/api/${k}`, (q, r) => {
+      const ids = String(q.query.where || '').match(/^id in \(([\d,]+)\)$/);
+      r.json({ [k]: ids ? P[k].filter(x => ids[1].split(',').map(Number).includes(x.id)) : P[k].filter(x => !x.hidden) });
+    });
+  }
   m.get('/api/entries', (req, res) => {
     if (throttleOnce) { throttleOnce = false; return res.status(429).set('Retry-After', '1').json({ message: 'slow down' }); }
     const [, a, b] = String(req.query.where).match(/time_interval in \("([^"]+)","([^"]+)"\)/);
@@ -118,8 +126,9 @@ test('API import: preview matches, creates and skips the right things', async ()
   const pv = ok(await admin.req('POST', '/import/paymo/fetch', { apiKey: KEY, from: '2026-11-01', to: '2026-11-30' }), 201);
   runId = pv.id;
   assert.ok(calls.some(c => c.includes('time_interval in ("2026-10-31T00:00:00Z","2026-11-01T00:00:00Z")')), 'entries fetched month by month');
-  assert.equal(pv.entries.new, 4); assert.equal(pv.entries.running, 1); assert.equal(pv.entries.zero, 1);
-  assert.equal(pv.entries.minutes, 150 + 90 + 60 + 30);
+  assert.ok(calls.some(c => c.includes('/tasks?where=id in (1005)')), 'archived tasks the entries need are fetched by id');
+  assert.equal(pv.entries.new, 5); assert.equal(pv.entries.running, 1); assert.equal(pv.entries.zero, 1);
+  assert.equal(pv.entries.minutes, 150 + 90 + 60 + 30 + 60);
   const person = n => pv.people.find(p => p.name === n);
   assert.equal(person('Casey Diaz').action, 'match'); assert.equal(person('Casey Diaz').matchedBy, 'email');
   assert.equal(person('Dana Fox').action, 'create');
@@ -131,19 +140,20 @@ test('API import: preview matches, creates and skips the right things', async ()
   assert.equal(svc('admin').how, 'default');
   assert.deepEqual(pv.clients.create, ['Internal (no client in Paymo)', 'Lakeside Brewing']); assert.equal(pv.clients.match, 1);
   assert.equal(pv.projects.match, 1, 'Northwind’s Retainer is matched by name');
-  assert.equal(pv.tasks.create, 2); assert.equal(pv.tasks.match, 1, 'Menu board refresh is matched; finished tasks without time stay out');
+  assert.equal(pv.tasks.create, 3); assert.equal(pv.tasks.match, 1, 'Menu board refresh is matched; finished tasks without time stay out, finished ones with time come in');
 });
 
 test('API import: choices in the preview, then import', async () => {
   const pv = ok(await admin.req('PATCH', `/import/runs/${runId}`, {
     userMap: { 503: 'skip' }, serviceLineMap: { admin: ids.S.strategy }, entryStatus: 'approved',
   }));
-  assert.equal(pv.entries.new, 3); assert.equal(pv.entries.skippedPerson, 1);
+  assert.equal(pv.entries.new, 4); assert.equal(pv.entries.skippedPerson, 1);
   assert.equal(pv.serviceLines.find(x => x.key === 'admin').how, 'chosen');
   const sum = ok(await admin.req('POST', `/import/runs/${runId}/commit`, {}));
-  assert.equal(sum.entriesImported, 3); assert.equal(sum.minutes, 300);
+  assert.equal(sum.entriesImported, 4); assert.equal(sum.minutes, 360);
   assert.equal(sum.peopleCreated, 1); assert.equal(sum.peopleLinked, 1);
-  assert.equal(sum.clientsCreated, 2); assert.equal(sum.projectsCreated, 2); assert.equal(sum.tasksCreated, 2);
+  assert.equal(sum.clientsCreated, 2); assert.equal(sum.projectsCreated, 2); assert.equal(sum.tasksCreated, 3);
+  assert.equal((await one(`SELECT status FROM tasks WHERE paymo_task_id = 1005`)).status, 'done', 'finished in Paymo, finished here');
   assert.equal((await admin.req('POST', `/import/runs/${runId}/commit`, {})).status, 409, 'a run imports once');
 
   const dana = await one(`SELECT id, role, password_hash, paymo_user_id, archived_at FROM users WHERE email = 'dana@fifthcolor.example'`);
@@ -162,14 +172,14 @@ test('API import: choices in the preview, then import', async () => {
   assert.equal(hist[0].action, 'imported');
   // the imported time shows in reports, and the CSV agrees
   const rep = ok(await admin.req('GET', `/reports/time?from=2026-11-01&to=2026-11-30&clients=${(await one(`SELECT id FROM clients WHERE name = 'Lakeside Brewing'`)).id}`));
-  assert.equal(rep.totals.minutes, 240);
+  assert.equal(rep.totals.minutes, 300);
   const csv = (await admin.req('GET', `/reports/time.csv?from=2026-11-01&to=2026-11-30&clients=${rep.filters.clients[0]}`, undefined, true)).data;
-  assert.equal(csv.trim().split('\r\n').length - 1, 2);
+  assert.equal(csv.trim().split('\r\n').length - 1, 3);
 });
 
 test('API import again: nothing is duplicated; only what is new comes over', async () => {
   const pv = ok(await admin.req('POST', '/import/paymo/fetch', { apiKey: KEY, from: '2026-11-01', to: '2026-11-30' }), 201);
-  assert.equal(pv.entries.already, 3);
+  assert.equal(pv.entries.already, 4);
   assert.equal(pv.entries.new, 1, 'only Old Timer’s entry, skipped last time');
   assert.equal(pv.tasks.create, 0); assert.equal(pv.clients.create.length, 0);
   const sum = ok(await admin.req('POST', `/import/runs/${pv.id}/commit`, {}));
@@ -177,7 +187,7 @@ test('API import again: nothing is duplicated; only what is new comes over', asy
   const old = await one(`SELECT archived_at FROM users WHERE email = 'old@fifthcolor.example'`);
   assert.ok(old.archived_at, 'people inactive in Paymo come in archived');
   const third = ok(await admin.req('POST', '/import/paymo/fetch', { apiKey: KEY, from: '2026-11-01', to: '2026-11-30' }), 201);
-  assert.equal(third.entries.new, 0); assert.equal(third.entries.already, 4);
+  assert.equal(third.entries.new, 0); assert.equal(third.entries.already, 5);
   assert.equal((await admin.req('POST', `/import/runs/${third.id}/commit`, {})).status, 400, 'nothing new to import');
   ok(await admin.req('POST', `/import/runs/${third.id}/discard`, {}));
   const runs = ok(await admin.req('GET', '/import/runs'));
