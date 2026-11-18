@@ -65,3 +65,10 @@ a.fc-nav { color: var(--fc-color-text-inverse); }
 
 /* read-only fields (for example a task you can see but not edit) */
 .fc-field__input:disabled { background: var(--fc-color-surface-muted); border-color: var(--fc-color-border); color: var(--fc-color-text-secondary); cursor: not-allowed; opacity: 1; }
+
+/* sections stack full width (the wireframe also defines .stack-16 as a wrapping flex row) */
+.fc-shell__main section.stack-16 { display: grid; grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 640px) {
+  .grid-2 { grid-template-columns: minmax(0, 1fr); }
+  .bell-panel { position: fixed; left: 12px; right: 12px; top: 64px; width: auto; }
+}
