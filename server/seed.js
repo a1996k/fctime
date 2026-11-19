@@ -1,7 +1,9 @@
 // Demo data adapted from the wireframe's sample records (seed(), seedWork(), seedV6()).
 // Dates are placed relative to "today" in the workspace time zone so the demo always looks current.
+import crypto from 'node:crypto';
 import { tx } from './db.js';
 import { hashPassword } from './auth.js';
+import { localParts } from './domain.js';
 import { addDays, weekStart } from '../public/js/shared/time.js';
 
 export const DEMO_USERS = [
@@ -65,27 +67,30 @@ export async function seedDemo({ password, log = console.log } = {}) {
   const pwHash = await hashPassword(password);
   return tx(async c => {
     if (await c.one('SELECT 1 FROM users LIMIT 1')) throw new Error('The database already has users. Run `npm run db:reset` to start over.');
-    const { today, time_zone: tz } = await c.one(`SELECT (now() AT TIME ZONE time_zone)::date::text AS today, time_zone FROM settings WHERE id = 1`);
+    const { time_zone: tz } = await c.one('SELECT time_zone FROM settings WHERE id = 1');
+    const today = localParts(new Date(), tz).date;
     const ws = weekStart(today);
     const S = {}, U = {}, C = {}, P = {}, T = {};
+    // Insert a row with a new id (the first placeholder) and return the id.
+    const add = async (sql, params) => { const id = crypto.randomUUID(); await c.query(sql, [id, ...params]); return id; };
     let sort = 0;
-    for (const s of SERVICES) S[s.key] = (await c.one('INSERT INTO service_lines (name, rate, color, sort, match_keywords) VALUES ($1, $2, $3, $4, $5) RETURNING id', [s.name, s.rate, s.color, ++sort, s.kw])).id;
+    for (const s of SERVICES) S[s.key] = await add('INSERT INTO service_lines (id, name, rate, color, sort, match_keywords) VALUES ($1, $2, $3, $4, $5, $6)', [s.name, s.rate, s.color, ++sort, s.kw]);
     for (const u of DEMO_USERS) {
-      U[u.key] = (await c.one('INSERT INTO users (name, email, role, dept_id, password_hash, capacity) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
-        [u.name, u.email, u.role, u.dept ? S[u.dept] : null, pwHash, u.capacity || [480, 480, 480, 480, 480, 0, 0]])).id;
+      U[u.key] = await add('INSERT INTO users (id, name, email, role, dept_id, password_hash, capacity) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+        [u.name, u.email, u.role, u.dept ? S[u.dept] : null, pwHash, JSON.stringify(u.capacity || [480, 480, 480, 480, 480, 0, 0])]);
     }
     for (const s of SERVICES) if (s.manager) await c.query('UPDATE service_lines SET manager_id = $1 WHERE id = $2', [U[s.manager], S[s.key]]);
     for (const cl of CLIENTS) {
-      C[cl.key] = (await c.one('INSERT INTO clients (name, owner_id, color, archived_at) VALUES ($1, $2, $3, $4) RETURNING id',
-        [cl.name, cl.owner ? U[cl.owner] : null, cl.color, cl.archived ? addDays(today, -120) : null])).id;
+      C[cl.key] = await add('INSERT INTO clients (id, name, owner_id, color, archived_at) VALUES ($1, $2, $3, $4, $5)',
+        [cl.name, cl.owner ? U[cl.owner] : null, cl.color, cl.archived ? addDays(today, -120) : null]);
       for (const p of cl.projects) {
-        P[p.key] = (await c.one('INSERT INTO projects (client_id, name, kind, status) VALUES ($1, $2, $3, $4) RETURNING id', [C[cl.key], p.name, p.kind, p.status || 'active'])).id;
+        P[p.key] = await add('INSERT INTO projects (id, client_id, name, kind, status) VALUES ($1, $2, $3, $4, $5)', [C[cl.key], p.name, p.kind, p.status || 'active']);
       }
     }
     for (const [pk, title, sk, uk, status, hours, so, dueo, billable = true] of TASKS) {
-      T[title] = (await c.one(`INSERT INTO tasks (project_id, service_line_id, title, assignee_id, status, budget_minutes, start_date, due_date, billable, created_by)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
-      [P[pk], S[sk], title, U[uk], status, hours * 60, addDays(ws, so), addDays(ws, dueo), billable, U.morgan])).id;
+      T[title] = await add(`INSERT INTO tasks (id, project_id, service_line_id, title, assignee_id, status, budget_minutes, start_date, due_date, billable, created_by)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+      [P[pk], S[sk], title, U[uk], status, hours * 60, addDays(ws, so), addDays(ws, dueo), billable, U.morgan]);
     }
     // Earlier weeks of time: approved two weeks back, partly through approval last week.
     const E = [
@@ -119,12 +124,13 @@ export async function seedDemo({ password, log = console.log } = {}) {
       const status = wb === 2 ? 'approved' : (i++ % 2 ? 'ae-approved' : 'submitted');
       const start = `${String(9 + (d % 3)).padStart(2, '0')}:00`;
       const endMin = (9 + (d % 3)) * 60 + minutes, end = `${String(Math.floor(endMin / 60)).padStart(2, '0')}:${String(endMin % 60).padStart(2, '0')}`;
-      const row = await c.one(`INSERT INTO time_entries (user_id, task_id, entry_date, start_time, end_time, minutes, note, status, source, submitted_at, ae_by, ae_at, dept_by, dept_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'manual', $9::date + time '17:00', $10, $11::timestamptz, $12, $13::timestamptz) RETURNING id`,
-      [U[uk], T[title], date, start, end, minutes, note, status, addDays(ws, -7 * wb + 4),
-        status === 'submitted' ? null : owner, status === 'submitted' ? null : addDays(ws, -7 * wb + 7),
-        status === 'approved' ? mgr : null, status === 'approved' ? addDays(ws, -7 * wb + 8) : null]);
-      await c.query(`INSERT INTO time_entry_events (entry_id, action, actor_id, detail) VALUES ($1, 'created', $2, '{"source":"seed"}')`, [row.id, U[uk]]);
+      // Service line and billable come from the task, as for any entry.
+      const id = await add(`INSERT INTO time_entries (id, user_id, task_id, entry_date, start_time, end_time, minutes, note, status, source, submitted_at, ae_by, ae_at, dept_by, dept_at, service_line_id, billable)
+        SELECT $1, $2, t.id, $4, $5, $6, $7, $8, $9, 'manual', $10, $11, $12, $13, $14, t.service_line_id, t.billable FROM tasks t WHERE t.id = $3`,
+      [U[uk], T[title], date, start, end, minutes, note, status, `${addDays(ws, -7 * wb + 4)} 17:00:00`,
+        status === 'submitted' ? null : owner, status === 'submitted' ? null : `${addDays(ws, -7 * wb + 7)} 00:00:00`,
+        status === 'approved' ? mgr : null, status === 'approved' ? `${addDays(ws, -7 * wb + 8)} 00:00:00` : null]);
+      await c.query(`INSERT INTO time_entry_events (entry_id, action, actor_id, detail) VALUES ($1, 'created', $2, '{"source":"seed"}')`, [id, U[uk]]);
     }
     log(`Seeded ${DEMO_USERS.length} people, ${SERVICES.length} service lines, ${CLIENTS.length} clients, ${TASKS.length} tasks, ${E.length} time entries. Workspace time zone ${tz}, today ${today}.`);
     return { S, U, C, P, T, today, weekStart: ws };

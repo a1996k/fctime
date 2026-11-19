@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 
-process.env.DATABASE_URL = process.env.VERIFY_DATABASE_URL || 'postgres://fctime:fctime@localhost:5432/fctime_test';
+process.env.DATABASE_URL = process.env.VERIFY_DATABASE_URL || 'mysql://fctime:fctime@localhost:3306/fctime_test';
 const require = createRequire(import.meta.url);
 let chromium;
 try { ({ chromium } = require('playwright')); } catch { console.error('Playwright is not installed. Run: npm i -D playwright && npx playwright install chromium'); process.exit(1); }
@@ -98,7 +98,7 @@ try {
   await casey.click(`.trow[data-task="${task.id}"] button[data-action="timer-go"]`);
   await casey.waitForSelector('.timer-card .big-timer');
   step('Started the timer from the task row on Home');
-  await query(`UPDATE timers SET started_at = now() - interval '52 minutes' WHERE task_id = $1`, [task.id]); // let it "run" for 52 minutes
+  await query(`UPDATE timers SET started_at = UTC_TIMESTAMP(6) - INTERVAL 52 MINUTE WHERE task_id = $1`, [task.id]); // let it "run" for 52 minutes
   await casey.reload();
   await casey.waitForSelector('.timer-card .big-timer');
   const shown = await casey.innerText('.timer-card .big-timer');

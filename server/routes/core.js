@@ -1,4 +1,5 @@
 // Sign-in, the bootstrap payload, and admin setup: people, roles, service lines, clients, projects, settings.
+import crypto from 'node:crypto';
 import { Router } from 'express';
 import { one, many, query, tx } from '../db.js';
 import { h, bad, conflict, notFound, forbidden, uuidParam, str, isUUID } from '../http.js';
@@ -54,29 +55,30 @@ r.get('/bootstrap', requireUser, h(async (req, res) => {
     many('SELECT id, name, color, rate, manager_id, sort, match_keywords, archived_at FROM service_lines ORDER BY sort, name'),
     many('SELECT id, name, owner_id, color, archived_at, paymo_client_id FROM clients ORDER BY name'),
     many('SELECT id, client_id, name, kind, status, paymo_project_id FROM projects ORDER BY name'),
-    many(`SELECT t.id, t.project_id, t.service_line_id, t.title, t.assignee_id, t.status, t.start_date::text AS start_date,
-                 t.due_date::text AS due_date, t.budget_minutes, t.billable, t.notes, t.created_by, t.created_at,
-                 COALESCE(l.m, 0)::int AS logged_minutes
+    many(`SELECT t.id, t.project_id, t.service_line_id, t.title, t.assignee_id, t.status, t.start_date,
+                 t.due_date, t.budget_minutes, t.billable, t.notes, t.created_by, t.created_at,
+                 COALESCE(l.m, 0) AS logged_minutes
             FROM tasks t LEFT JOIN (SELECT task_id, SUM(minutes) AS m FROM time_entries GROUP BY task_id) l ON l.task_id = t.id
            ORDER BY t.due_date, t.title`),
-    one(`SELECT id, task_id, started_at, note, (EXTRACT(EPOCH FROM started_at) * 1000)::bigint AS started_ms FROM timers WHERE user_id = $1`, [me.id]),
-    one(`SELECT COUNT(DISTINCT (e.user_id, e.status, date_trunc('week', e.entry_date), CASE WHEN e.status = 'submitted' THEN c.id ELSE sl.id END))::int AS n
+    one(`SELECT id, task_id, started_at, note FROM timers WHERE user_id = $1`, [me.id]),
+    // one per approval group: person, step, week (Monday) and client or service line
+    one(`SELECT COUNT(DISTINCT e.user_id, e.status, DATE_SUB(e.entry_date, INTERVAL WEEKDAY(e.entry_date) DAY), CASE WHEN e.status = 'submitted' THEN c.id ELSE sl.id END) AS n
            FROM time_entries e ${ENTRY_JOINS} WHERE ${stepScopeSql(me, 1)}`, [me.id]),
-    one(`SELECT COUNT(*)::int AS n FROM hours_requests WHERE status = 'pending' ${admin ? '' : 'AND requested_by = $1'}`, admin ? [] : [me.id]),
+    one(`SELECT COUNT(*) AS n FROM hours_requests WHERE status = 'pending' ${admin ? '' : 'AND requested_by = $1'}`, admin ? [] : [me.id]),
   ]);
   // Bill rates are for managers and admins, as in reports.
   if (!admin && !isMgr(me)) serviceLines.forEach(s => { delete s.rate; });
   res.json({
     me, roles: ROLES, settings: { ...settings, server_now: Date.now() },
     users, serviceLines, clients, projects, tasks,
-    timer: timer ? { ...timer, started_ms: Number(timer.started_ms) } : null,
+    timer: timer ? { ...timer, started_ms: new Date(timer.started_at).getTime() } : null,
     counts: { approvals: apprCount.n, hoursRequests: reqCount.n, notifications: await refreshAndCount(me.id) },
   });
 }));
 
 /* ---------- people ---------- */
 async function assertAdminRemains(c, changingId, nextRole, archiving) {
-  const n = await c.one(`SELECT COUNT(*)::int AS n FROM users WHERE role = 'admin' AND archived_at IS NULL AND id <> $1`, [changingId]);
+  const n = await c.one(`SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND archived_at IS NULL AND id <> $1`, [changingId]);
   const cur = await c.one('SELECT role FROM users WHERE id = $1', [changingId]);
   if (cur && cur.role === 'admin' && (nextRole !== 'admin' || archiving) && n.n === 0) throw bad('Keep at least one active admin.');
 }
@@ -91,9 +93,10 @@ r.post('/users', requireAdmin, h(async (req, res) => {
   const password = String(req.body.password || '');
   if (password.length < 8) throw bad('Set a password of at least 8 characters.', { field: 'password' });
   if (await one('SELECT 1 FROM users WHERE lower(email) = $1', [email])) throw conflict('Someone already uses that email.');
-  const u = await one(`INSERT INTO users (name, email, role, dept_id, password_hash) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-    [name, email, role, dept, await hashPassword(password)]);
-  res.status(201).json({ id: u.id });
+  const id = crypto.randomUUID();
+  await query(`INSERT INTO users (id, name, email, role, dept_id, password_hash) VALUES ($1, $2, $3, $4, $5, $6)`,
+    [id, name, email, role, dept, await hashPassword(password)]);
+  res.status(201).json({ id });
 }));
 r.patch('/users/:id', requireAdmin, h(async (req, res) => {
   const id = uuidParam(req.params.id);
@@ -121,7 +124,7 @@ r.patch('/users/:id', requireAdmin, h(async (req, res) => {
     }
     if (Array.isArray(b.capacity)) {
       if (b.capacity.length !== 7 || b.capacity.some(x => !Number.isInteger(x) || x < 0 || x > 1440)) throw bad('Capacity needs 7 daily values in minutes.');
-      set('capacity', b.capacity);
+      set('capacity', JSON.stringify(b.capacity));
     }
     if (b.archived !== undefined) {
       if (id === req.user.id) throw bad('You can’t archive yourself.');
@@ -164,10 +167,12 @@ async function readServiceLine(b, partial) {
 r.post('/service-lines', requireAdmin, h(async (req, res) => {
   const o = await readServiceLine(req.body, false);
   if (await one('SELECT 1 FROM service_lines WHERE lower(name) = lower($1)', [o.name])) throw conflict('A service line with that name exists.');
-  const row = await one(`INSERT INTO service_lines (name, color, rate, manager_id, match_keywords, sort)
-    VALUES ($1, COALESCE($2, '#868E96'), COALESCE($3, 0), $4, COALESCE($5, ''), (SELECT COALESCE(MAX(sort), 0) + 1 FROM service_lines)) RETURNING id`,
-    [o.name, o.color || null, o.rate ?? null, o.manager_id || null, o.match_keywords ?? null]);
-  res.status(201).json({ id: row.id });
+  const id = crypto.randomUUID();
+  const { next } = await one('SELECT COALESCE(MAX(sort), 0) + 1 AS next FROM service_lines');
+  await query(`INSERT INTO service_lines (id, name, color, rate, manager_id, match_keywords, sort)
+    VALUES ($1, $2, COALESCE($3, '#868E96'), COALESCE($4, 0), $5, COALESCE($6, ''), $7)`,
+    [id, o.name, o.color || null, o.rate ?? null, o.manager_id || null, o.match_keywords ?? null, next]);
+  res.status(201).json({ id });
 }));
 r.patch('/service-lines/:id', requireAdmin, h(async (req, res) => {
   const id = uuidParam(req.params.id);
@@ -194,8 +199,9 @@ async function readClient(b, partial) {
 r.post('/clients', requireAdmin, h(async (req, res) => {
   const o = await readClient(req.body, false);
   if (await one('SELECT 1 FROM clients WHERE lower(name) = lower($1)', [o.name])) throw conflict('A client with that name exists.');
-  const row = await one(`INSERT INTO clients (name, owner_id, color) VALUES ($1, $2, COALESCE($3, '#868E96')) RETURNING id`, [o.name, o.owner_id || null, o.color || null]);
-  res.status(201).json({ id: row.id });
+  const id = crypto.randomUUID();
+  await query(`INSERT INTO clients (id, name, owner_id, color) VALUES ($1, $2, $3, COALESCE($4, '#868E96'))`, [id, o.name, o.owner_id || null, o.color || null]);
+  res.status(201).json({ id });
 }));
 r.patch('/clients/:id', requireAdmin, h(async (req, res) => {
   const id = uuidParam(req.params.id);
@@ -223,9 +229,10 @@ r.post('/projects', requireAdmin, h(async (req, res) => {
   if (cl.archived_at) throw bad('That client is archived. Restore it first.');
   const o = readProject(req.body, false);
   if (await one('SELECT 1 FROM projects WHERE client_id = $1 AND lower(name) = lower($2)', [clientId, o.name])) throw conflict('This client already has a project with that name.');
-  const row = await one(`INSERT INTO projects (client_id, name, kind, status) VALUES ($1, $2, COALESCE($3, 'project'), COALESCE($4, 'active')) RETURNING id`,
-    [clientId, o.name, o.kind || null, o.status || null]);
-  res.status(201).json({ id: row.id });
+  const id = crypto.randomUUID();
+  await query(`INSERT INTO projects (id, client_id, name, kind, status) VALUES ($1, $2, $3, COALESCE($4, 'project'), COALESCE($5, 'active'))`,
+    [id, clientId, o.name, o.kind || null, o.status || null]);
+  res.status(201).json({ id });
 }));
 r.patch('/projects/:id', requireAdmin, h(async (req, res) => {
   const id = uuidParam(req.params.id);
@@ -244,7 +251,6 @@ r.patch('/settings', requireAdmin, h(async (req, res) => {
   if (b.budgetAlertPct !== undefined) { const v = +b.budgetAlertPct; if (!(v >= 10 && v <= 100)) throw bad('Budget alert is between 10% and 100%.'); o.budget_alert_pct = Math.round(v); }
   if (b.timeZone !== undefined) {
     try { new Intl.DateTimeFormat('en-US', { timeZone: b.timeZone }); } catch { throw bad('Choose a valid time zone.'); }
-    if (!(await one('SELECT 1 FROM pg_timezone_names WHERE name = $1', [b.timeZone]))) throw bad('Choose a valid time zone.');
     o.time_zone = b.timeZone;
   }
   o.updated_at = new Date(); o.updated_by = req.user.id;

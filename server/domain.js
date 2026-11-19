@@ -1,5 +1,6 @@
 // Business rules shared by the routes. Every rule that protects data is enforced here,
 // on the server, regardless of what the browser shows.
+import crypto from 'node:crypto';
 import { one, many } from './db.js';
 import { fromHM, rangesOverlap, roundUp, entrySpan } from '../public/js/shared/time.js';
 import { bad, conflict, forbidden, notFound } from './http.js';
@@ -13,13 +14,21 @@ export const isMgr = u => u.role === 'ae' || u.role === 'acct';
 export const canSetUpTasks = u => isAdmin(u) || isMgr(u);
 export const MAX_BUDGET_MINUTES = 10000 * 60;
 
+/**
+ * A moment as a date and clock time in a time zone. Time-zone math happens here rather than in SQL,
+ * so it works on any MySQL server (many don't have named time zones loaded).
+ */
+export function localParts(instant, timeZone) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+    .formatToParts(instant).map(x => [x.type, x.value]));
+  return { date: `${p.year}-${p.month}-${p.day}`, hm: `${p.hour === '24' ? '00' : p.hour}:${p.minute}` };
+}
+
 /** Workspace settings plus "today" in the workspace time zone. */
 export async function getSettings(c = { one }) {
-  return c.one(
-    `SELECT time_zone, rounding_minutes, budget_alert_pct,
-            (now() AT TIME ZONE time_zone)::date::text AS today,
-            to_char(now() AT TIME ZONE time_zone, 'HH24:MI') AS now_hm
-       FROM settings WHERE id = 1`);
+  const s = await c.one('SELECT time_zone, rounding_minutes, budget_alert_pct FROM settings WHERE id = 1');
+  const n = localParts(new Date(), s.time_zone);
+  return { ...s, today: n.date, now_hm: n.hm };
 }
 
 /* ---------- visibility ---------- */
@@ -65,7 +74,7 @@ export async function taskForTime(c, taskId, { lock = false } = {}) {
   return t;
 }
 export async function loggedMinutes(c, taskId) {
-  const r = await c.one('SELECT COALESCE(SUM(minutes), 0)::int AS m FROM time_entries WHERE task_id = $1', [taskId]);
+  const r = await c.one('SELECT COALESCE(SUM(minutes), 0) AS m FROM time_entries WHERE task_id = $1', [taskId]);
   return r.m;
 }
 /** Wireframe isLocked(): time locks once the logged time reaches the budget. */
@@ -97,9 +106,9 @@ export async function findOverlaps(c, userId, date, start, end, minutes, exclude
   if (!start) return [];
   const [a, b] = entrySpan(start, end, minutes);
   const rows = await c.many(
-    `SELECT e.id, to_char(e.start_time, 'HH24:MI') AS start, to_char(e.end_time, 'HH24:MI') AS "end", e.minutes, t.title AS task_title
+    `SELECT e.id, TIME_FORMAT(e.start_time, '%H:%i') AS start, TIME_FORMAT(e.end_time, '%H:%i') AS \`end\`, e.minutes, t.title AS task_title
        FROM time_entries e JOIN tasks t ON t.id = e.task_id
-      WHERE e.user_id = $1 AND e.entry_date = $2 AND e.start_time IS NOT NULL AND ($3::uuid IS NULL OR e.id <> $3)`,
+      WHERE e.user_id = $1 AND e.entry_date = $2 AND e.start_time IS NOT NULL AND ($3 IS NULL OR e.id <> $3)`,
     [userId, date, excludeId]);
   return rows.filter(r => { const [s, e] = entrySpan(r.start, r.end, r.minutes); return rangesOverlap(a, b, s, e); });
 }
@@ -110,12 +119,14 @@ export async function logEvent(c, entryId, action, actorId, extra = {}) {
     [entryId, action, extra.step || null, actorId, extra.reason || null, extra.detail ? JSON.stringify(extra.detail) : null]);
 }
 
+/** An entry's version: its last change, to the microsecond. Reviewers send it back with their decision. */
+export const VERSION_SQL = 'CAST(ROUND(UNIX_TIMESTAMP(e.updated_at) * 1000000) AS CHAR)';
 export const ENTRY_COLUMNS = `
-  e.id, e.user_id, e.task_id, e.entry_date::text AS date,
-  to_char(e.start_time, 'HH24:MI') AS start, to_char(e.end_time, 'HH24:MI') AS "end",
+  e.id, e.user_id, e.task_id, e.entry_date AS date,
+  TIME_FORMAT(e.start_time, '%H:%i') AS start, TIME_FORMAT(e.end_time, '%H:%i') AS \`end\`,
   e.minutes, e.note, e.status, e.source, e.submitted_at,
   e.ae_by, e.ae_at, e.dept_by, e.dept_at, e.rejected_by, e.rejected_at, e.rejected_reason, e.rejected_step,
-  e.created_at, e.updated_at, (EXTRACT(EPOCH FROM e.updated_at) * 1000000)::bigint::text AS version,
+  e.created_at, e.updated_at, ${VERSION_SQL} AS version,
   t.title AS task_title, e.billable, e.service_line_id, sl.name AS service_line_name, sl.color AS service_line_color,
   p.id AS project_id, p.name AS project_name, c.id AS client_id, c.name AS client_name, c.color AS client_color,
   eu.name AS user_name`;
@@ -127,26 +138,38 @@ export const ENTRY_COLUMNS = `
  * The UNIQUE source_timer_id makes a retried stop return the same entry instead of a second one.
  */
 export async function stopTimerRow(c, timer, settings, actorId) {
-  const t = await c.one(
-    `SELECT (started_at AT TIME ZONE $2)::date::text AS date,
-            to_char(started_at AT TIME ZONE $2, 'HH24:MI') AS start,
-            to_char(now() AT TIME ZONE $2, 'HH24:MI') AS "end",
-            EXTRACT(EPOCH FROM now() - started_at)::float AS secs
-       FROM timers WHERE id = $1`, [timer.id, settings.time_zone]);
-  const raw = Math.max(1, Math.round(t.secs / 60));
+  // Use the database clock for both ends, so start and stop come from the same clock.
+  const { started_at: startedAt, now } = await c.one('SELECT started_at, UTC_TIMESTAMP(6) AS now FROM timers WHERE id = $1', [timer.id]);
+  const a = localParts(startedAt, settings.time_zone), b = localParts(now, settings.time_zone);
+  const raw = Math.max(1, Math.round((now - startedAt) / 60000));
   let minutes = roundUp(raw, settings.rounding_minutes);
   const capped = minutes > 1440;
   if (capped) minutes = 1440;
-  const ins = await c.one(
-    `INSERT INTO time_entries (user_id, task_id, entry_date, start_time, end_time, minutes, note, status, source, source_timer_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, 'draft', 'timer', $8)
-     ON CONFLICT (source_timer_id) DO NOTHING RETURNING id`,
-    [timer.user_id, timer.task_id, t.date, t.start, t.end, minutes, timer.note || '', timer.id]);
+  // The timer row is locked, so no entry exists for it yet; the unique source_timer_id is a backstop.
+  let entryId = crypto.randomUUID(), created = true;
+  try {
+    await insertEntry(c, { id: entryId, userId: timer.user_id, taskId: timer.task_id, date: a.date, start: a.hm, end: b.hm, minutes, note: timer.note || '', status: 'draft', source: 'timer', sourceTimerId: timer.id });
+  } catch (e) {
+    if (e.code !== 'ER_DUP_ENTRY') throw e;
+    entryId = (await c.one('SELECT id FROM time_entries WHERE source_timer_id = $1', [timer.id])).id; created = false;
+  }
   await c.query('DELETE FROM timers WHERE id = $1', [timer.id]);
-  const entryId = ins ? ins.id : (await c.one('SELECT id FROM time_entries WHERE source_timer_id = $1', [timer.id])).id;
-  if (ins) await logEvent(c, entryId, 'created', actorId, { detail: { source: 'timer', rawMinutes: raw, rounding: settings.rounding_minutes, capped } });
-  const overlaps = await findOverlaps(c, timer.user_id, t.date, t.start, t.end, minutes, entryId);
+  if (created) await logEvent(c, entryId, 'created', actorId, { detail: { source: 'timer', rawMinutes: raw, rounding: settings.rounding_minutes, capped } });
+  const overlaps = await findOverlaps(c, timer.user_id, a.date, a.hm, b.hm, minutes, entryId);
   return { entryId, minutes, rawMinutes: raw, capped, overlaps };
+}
+
+/**
+ * Insert a time entry. It takes its service line and billable flag from its task (they stay with the
+ * entry once it's submitted).
+ */
+export async function insertEntry(c, o) {
+  const r = await c.query(
+    `INSERT INTO time_entries (id, user_id, task_id, entry_date, start_time, end_time, minutes, note, status, source, source_timer_id, service_line_id, billable)
+     SELECT $1, $2, t.id, $3, $4, $5, $6, $7, $8, $9, $10, t.service_line_id, t.billable FROM tasks t WHERE t.id = $11`,
+    [o.id, o.userId, o.date, o.start || null, o.end || null, o.minutes, o.note || '', o.status || 'draft', o.source || 'manual', o.sourceTimerId || null, o.taskId]);
+  if (!r.rowCount) throw notFound('That task doesn’t exist.');
+  return o.id;
 }
 
 export async function entryById(c, id) {

@@ -11,24 +11,28 @@ An internal web app for tracking time against FifthColor client work. Navigation
 
 ## Stack
 
-- **Server:** Node.js 20+ and Express 5, with PostgreSQL 14+ through `pg`. No ORM; the schema is plain SQL in `db/migrations/`.
+- **Server:** Node.js 20+ and Express 5, with MySQL 8.0 through `mysql2`, the same database as FifthColor’s other applications. No ORM; the schema is plain SQL in `db/migrations/`.
 - **Client:** a no-build single-page app (`public/`) that reuses the wireframe’s stylesheet, icons and component markup unchanged.
-- **Sign-in:** email and password, hashed with scrypt, with HTTP-only session cookies stored in Postgres. Mutating requests must be JSON, which blocks cross-site form posts. People change their own password by clicking their name at the top of any page.
+- **Sign-in:** email and password, hashed with scrypt, with HTTP-only session cookies stored in the database. Mutating requests must be JSON, which blocks cross-site form posts. People change their own password by clicking their name at the top of any page.
 - **Time:** durations are whole minutes. Dates and Monday-start weeks follow the workspace time zone (Settings → Company defaults, default `America/Chicago`). Stopping a timer is safe to retry: each timer creates exactly one entry (`time_entries.source_timer_id` is unique).
 - **Integrity:** each entry keeps its own service line and billable flag once submitted, so later task edits can’t move it to a different approver or change approved totals. Reviewers approve exactly the version of each entry they saw.
 
 ## Local setup
 
-You need Node.js 20 or newer and PostgreSQL. Either use your own Postgres, or start one with Docker:
+You need Node.js 20 or newer and MySQL 8.0.16 or newer (MariaDB isn’t supported). Either use your own MySQL server, or start one with Docker:
 
 ```bash
 docker compose up -d
 ```
 
-That creates the `fctime` database and an empty `fctime_test` database, with user and password `fctime`/`fctime`. If you use your own Postgres instead, create both databases:
+That creates the `fctime` database and an empty `fctime_test` database, with user and password `fctime`/`fctime`. If you use your own MySQL server instead, create the user and both databases as an admin (pick your own password and put it in `DATABASE_URL`):
 
-```bash
-createdb fctime && createdb fctime_test
+```sql
+CREATE USER 'fctime'@'%' IDENTIFIED BY 'fctime';
+CREATE DATABASE fctime CHARACTER SET utf8mb4;
+CREATE DATABASE fctime_test CHARACTER SET utf8mb4;
+GRANT ALL PRIVILEGES ON fctime.* TO 'fctime'@'%';
+GRANT ALL PRIVILEGES ON fctime_test.* TO 'fctime'@'%';
 ```
 
 Then install, configure, load the demo data and start the server:
@@ -63,6 +67,13 @@ To run the browser check on your machine, install Playwright once:
 ```bash
 npm i -D playwright && npx playwright install chromium
 ```
+
+### MySQL notes
+
+- `DATABASE_URL` looks like `mysql://user:password@host:3306/fctime`.
+- Times are stored in UTC. The app sets each connection to UTC and does the workspace time zone math itself, so MySQL’s time zone tables aren’t needed.
+- There are no triggers, stored procedures or events, so the app’s database user needs only ordinary table privileges. That works with binary logging on and on managed MySQL services.
+- A Paymo import keeps a copy of the fetched data or uploaded file until you import or discard it. A 200,000-row CSV takes about 22 MB, which fits within MySQL 8’s default `max_allowed_packet` of 64 MB. If your server sets it lower, raise it for large imports.
 
 ## Demo sign-in
 

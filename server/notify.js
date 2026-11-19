@@ -11,8 +11,8 @@ export async function notify(c, userIds, type, title, body, link, { actorId = nu
   if (!ids.length) return;
   await c.query(
     `INSERT INTO notifications (user_id, type, title, body, link, dedupe_key)
-     SELECT u.id, $2, $3, $4, $5, $6 FROM users u WHERE u.id = ANY($1::uuid[]) AND u.archived_at IS NULL
-     ON CONFLICT (user_id, dedupe_key) DO NOTHING`,
+     SELECT u.id, $2, $3, $4, $5, $6 FROM users u WHERE u.id IN ($1) AND u.archived_at IS NULL
+     ON DUPLICATE KEY UPDATE notifications.id = notifications.id`,
     [ids, type, title, body || '', link || null, key]);
 }
 export async function adminIds(c) {
@@ -31,7 +31,7 @@ export async function notifySubmitted(c, actor, entryIds, ws) {
   const rows = await c.many(`
     SELECT e.minutes, cl.id AS client_id, cl.name AS client_name, cl.owner_id
       FROM time_entries e JOIN tasks t ON t.id = e.task_id JOIN projects p ON p.id = t.project_id JOIN clients cl ON cl.id = p.client_id
-     WHERE e.id = ANY($1::uuid[])`, [entryIds]);
+     WHERE e.id IN ($1)`, [entryIds]);
   const byClient = groupBy(rows, r => r.client_id);
   for (const list of byClient.values()) {
     const r0 = list[0], minutes = sum(list);
@@ -43,11 +43,11 @@ export async function notifySubmitted(c, actor, entryIds, ws) {
 /** After approvals and returns: next approver, or the person whose time it is. */
 export async function notifyDecision(c, actor, entryIds, kind, reason) {
   const rows = await c.many(`
-    SELECT e.user_id, e.minutes, e.status, e.entry_date::text AS date, cl.name AS client_name,
+    SELECT e.user_id, e.minutes, e.status, e.entry_date AS date, cl.name AS client_name,
            sl.id AS service_line_id, sl.name AS service_line_name, sl.manager_id, u.name AS user_name
       FROM time_entries e JOIN tasks t ON t.id = e.task_id JOIN projects p ON p.id = t.project_id JOIN clients cl ON cl.id = p.client_id
       JOIN service_lines sl ON sl.id = e.service_line_id JOIN users u ON u.id = e.user_id
-     WHERE e.id = ANY($1::uuid[])`, [entryIds]);
+     WHERE e.id IN ($1)`, [entryIds]);
   if (kind === 'returned') {
     for (const list of groupBy(rows, r => `${r.user_id}|${weekStart(r.date)}`).values()) {
       const ws = weekStart(list[0].date);
@@ -87,7 +87,7 @@ export async function notifyAssigned(c, actor, task, isNew) {
 export async function checkBudget(c, taskId, alertPct) {
   const t = await c.one(`
     SELECT t.id, t.title, t.project_id, t.assignee_id, t.budget_minutes, cl.name AS client_name,
-           COALESCE((SELECT SUM(minutes) FROM time_entries WHERE task_id = t.id), 0)::int AS logged
+           COALESCE((SELECT SUM(minutes) FROM time_entries WHERE task_id = t.id), 0) AS logged
       FROM tasks t JOIN projects p ON p.id = t.project_id JOIN clients cl ON cl.id = p.client_id WHERE t.id = $1`, [taskId]);
   if (!t || !t.budget_minutes) return;
   const link = taskLink(t.project_id, t.id);
@@ -103,9 +103,9 @@ export async function checkBudget(c, taskId, alertPct) {
 /** Due-date reminders for one person, created when they load the app (wireframe runChecks, two days ahead). */
 export async function dueReminders(c, userId, today) {
   const rows = await c.many(`
-    SELECT t.id, t.title, t.project_id, t.due_date::text AS due, p.name AS project_name, cl.name AS client_name
+    SELECT t.id, t.title, t.project_id, t.due_date AS due, p.name AS project_name, cl.name AS client_name
       FROM tasks t JOIN projects p ON p.id = t.project_id JOIN clients cl ON cl.id = p.client_id
-     WHERE t.assignee_id = $1 AND t.status <> 'done' AND cl.archived_at IS NULL AND t.due_date <= $2::date`, [userId, addDays(today, 2)]);
+     WHERE t.assignee_id = $1 AND t.status <> 'done' AND cl.archived_at IS NULL AND t.due_date <= $2`, [userId, addDays(today, 2)]);
   for (const t of rows) {
     const over = t.due < today;
     await notify(c, [userId], 'due', over ? `Overdue: ${t.title}` : `Due ${t.due === today ? 'today' : shortDate(t.due)}: ${t.title}`,

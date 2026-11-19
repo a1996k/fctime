@@ -119,7 +119,7 @@ Nobody is notified of their own action. Unread counts refresh every minute. Emai
 
 ## Assumptions and open decisions
 
-1. **Stack.** The repo was empty, so this is a new project: Node + Express + PostgreSQL, with a no-build single-page app that reuses the wireframe’s CSS, icons and component markup unchanged.
+1. **Stack.** The repo was empty, so this is a new project: Node + Express + MySQL 8, with a no-build single-page app that reuses the wireframe’s CSS, icons and component markup unchanged. MySQL matches FifthColor’s other applications. The first version used PostgreSQL and was switched over with the same behavior and tests.
 2. **Workspace time zone** defaults to `America/Chicago` (the wireframe’s `paymo.tz`) and is admin-editable. “Today”, timer dates, Monday-start weeks and displayed timestamps use it. Changing it doesn’t move saved entries.
 3. **Timer entry date** is the day the timer *started* (the wireframe used the stop day). A timer that runs past 24 hours is saved as 24:00, with a warning to fix it. A running timer blocks submitting only the week it will land in.
 4. **Rounding** rounds the duration up; the start and end clock times stay as recorded (same as the wireframe), so a rounded timer entry counts more minutes than its clock span. Overlap checks and the calendar use the recorded span. Editing an entry without changing its times keeps the rounded minutes. Entries can't cross midnight in the form; split them into one entry per day.
@@ -132,7 +132,7 @@ Nobody is notified of their own action. Unread counts refresh every minute. Emai
 7. **Nobody approves their own time** (not covered by the wireframe):
    - A reviewer’s own time goes to admins, and the approvals list says so.
    - An admin’s own time goes to another active admin. Only a sole admin may approve their own time, since nobody else could.
-8. **Submitted time is frozen** (added after review). Each entry keeps its service line (which decides the department manager) and billable flag from submission, while the client stays fixed through its project. Task edits change only time that hasn’t been submitted yet. Reviewers act on the exact version of each entry they saw, and anything changed since is refused.
+8. **Submitted time is frozen** (added after review). Each entry keeps its service line (which decides the department manager) and billable flag from submission, while the client stays fixed through its project. Task edits change only time that hasn’t been submitted yet, and sent-back time picks up the task’s current values again. The app keeps these in step in the same transaction as each change, without database triggers. Reviewers act on the exact version of each entry they saw, and anything changed since is refused.
 9. **Overlap warning** appears in the form as soon as the times overlap, and again after saving. Saving is always allowed. The wireframe only warned after saving.
 10. **Budget checks** block only added minutes. An entry already over budget (a timer can run past the limit) can still be corrected or reduced.
 11. **Report visibility** (the wireframe showed everyone all time):
@@ -142,7 +142,7 @@ Nobody is notified of their own action. Unread counts refresh every minute. Emai
     - The CSV, the person filter and the task time log follow the same rule. Bill rates and bill-rate value show only to managers and admins; cost and margin are in the backlog.
 12. **Board columns are fixed** to the wireframe defaults. Custom columns per project are in the backlog.
 13. **Setup is visible to everyone signed in:** all clients, projects and tasks, as in the wireframe. Only admins change people, service lines, clients, projects and settings.
-14. **Sign-in** is email and password, with server sessions in Postgres:
+14. **Sign-in** is email and password, with server sessions in the database:
     - Failed attempts are blocked per email after 10. Many failures from one network address slow that address down but never block a correct password.
     - Unknown emails take as long to reject as wrong passwords.
     - People change their own password, which signs out their other sessions.

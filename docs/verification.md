@@ -1,6 +1,13 @@
 # Verification
 
-Run on 2026-11-18 against PostgreSQL 16 and Node 22, workspace time zone America/Chicago, with the seeded demo users. Each suite wipes and reseeds its own database (`fctime_test`).
+Run on 2026-11-19 against MySQL 8.0.46 and Node 22, workspace time zone America/Chicago, with the seeded demo users. Each suite wipes and reseeds its own database (`fctime_test`).
+
+## Switch to MySQL
+
+The app first ran on PostgreSQL 16; it now runs on MySQL 8 to match FifthColor’s other applications. Both suites passed on PostgreSQL before the switch and pass on MySQL after it, with the same checks.
+- **No triggers.** The entry snapshot (service line and billable flag) is now kept in step by the app, in the same transaction as each change. New checks prove that unsubmitted time follows task edits and that sent-back time picks up the task’s current service line.
+- **Time zones.** Timestamps are stored in UTC, and workspace dates are worked out in Node. MySQL’s time zone tables aren’t needed.
+- **Large imports.** A 200,000-row Paymo CSV is about 22 MB once stored. It saved in under a second, within MySQL 8’s default `max_allowed_packet` of 64 MB.
 
 ## Browser walk-through: `npm run verify:ui` (21 checks, all passing)
 
@@ -12,7 +19,7 @@ The script drives the real UI in Chromium. To give the timer a realistic duratio
 | 2 | Casey opens Home | **Add task** is locked for her (“Admins and managers add tasks”) |
 | 3 | Casey starts a timer from the task row, then refreshes the page | Timer restored from the server, showing **0:52:00** |
 | 4 | Casey stops it from the sidebar | “Logged 0:52”; exactly **one** draft entry, with start and end |
-| 5 | Casey drags 3:00–4:00 PM on today’s calendar column | The form opens with **15:00 – 16:00** filled in and **warns about the overlap before saving** |
+| 5 | Casey drags out an hour on today’s calendar column, overlapping the timer entry | The form opens with that range filled in (**10:00 – 11:00** on this run) and **warns about the overlap before saving** |
 | 6 | Saves it, then adds 0:30 as a total | Both saved; the overlap warning shows again after saving |
 | 7 | Submits the week | “Week submitted, 2:22” |
 | 8 | Alex signs in | His **bell** shows “Time to approve: Casey Diaz submitted 2:22 on Northwind Coffee…”; clicking it opens Timesheet approvals |
@@ -43,7 +50,7 @@ Screenshots: [Home with timer](screenshots/home-timer.png), [calendar drag](scre
   - Stale decisions are refused, and repeating a decision is refused.
   - Wireframe exceptions: no owner means admins approve, and one person can complete both steps.
   - No self-approval: a manager’s own time goes to admins with a clear label, and an admin’s own time goes to another admin.
-- **Frozen routing:** the review’s hijack scenario. Moving a task to another service line after submission doesn’t move its submitted time, and approved billable totals don’t change when the task’s billable flag does.
+- **Frozen routing:** the review’s hijack scenario. Moving a task to another service line after submission doesn’t move its submitted time, and approved billable totals don’t change when the task’s billable flag does. Time not yet submitted does follow the task, and sent-back time picks up the task’s current service line.
 - **Reports:** for six combinations of user and filter, CSV rows, minutes and billable minutes equal the report totals. Each role sees only what it should, including the task time log.
 - **Notifications:** each event reaches the right person once, and people can’t mark others’ notifications read.
 - **People and sign-in:** role and department validation, bill rates hidden from team members, changing your own password, and archiving someone saves their running timer as a draft.

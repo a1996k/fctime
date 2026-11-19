@@ -7,6 +7,7 @@
 //
 // Options: --status approved|draft (default approved), --extra-hours N (open tasks without a Paymo budget),
 //          --default-service "Creative" (service line for task lists that match no keywords).
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import '../server/env.js';
 import { one, tx, closePool, query, many } from '../server/db.js';
@@ -61,8 +62,8 @@ try {
   if (!args.commit) { console.log('\nPreview only. Add --commit to import.'); }
   else {
     const sum = await tx(async c => commitPlan(c, await buildPlan(c, normalizeRun(run, settings), options), actor, null, settings.today));
-    await query(`INSERT INTO import_runs (source, status, label, options, raw, summary, created_by, imported_at) VALUES ($1, 'imported', $2, $3, '{}'::jsonb, $4, $5, now())`,
-      [run.source, `${run.label} (command line)`, JSON.stringify(options), JSON.stringify(sum), actor.id]);
+    await query(`INSERT INTO import_runs (id, source, status, label, options, raw, summary, created_by, imported_at) VALUES ($1, $2, 'imported', $3, $4, '{}', $5, $6, UTC_TIMESTAMP(6))`,
+      [crypto.randomUUID(), run.source, `${run.label} (command line)`, JSON.stringify(options), JSON.stringify(sum), actor.id]);
     console.log(`\nImported ${sum.entriesImported} entries (${h(sum.minutes)} h). Added ${sum.peopleCreated} people, ${sum.clientsCreated} clients, ${sum.projectsCreated} projects, ${sum.tasksCreated} tasks.`);
   }
 } catch (e) {

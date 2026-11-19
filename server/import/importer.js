@@ -9,6 +9,13 @@ const lower = s => String(s || '').trim().toLowerCase();
 const PALETTE = ['#E8590C', '#1971C2', '#2B8A3E', '#7048E8', '#C2255C', '#0C8599', '#E67700', '#495057'];
 const NO_CLIENT = '__none';
 const isUUID = s => typeof s === 'string' && /^[0-9a-f-]{36}$/i.test(s);
+function* chunks(list, size) { for (let i = 0; i < list.length; i += size) yield list.slice(i, i + size); }
+
+/** Link a matched record to its Paymo id, unless another record already has that id. */
+async function linkPaymoId(c, table, column, paymoId, id) {
+  if (await c.one(`SELECT 1 FROM ${table} WHERE ${column} = $1`, [paymoId])) return 0;
+  return (await c.query(`UPDATE ${table} SET ${column} = $1 WHERE id = $2 AND ${column} IS NULL`, [paymoId, id])).rowCount;
+}
 
 export function normalizeRun(run, settings) {
   if (run.source === 'paymo-csv') return normalizeCsv(run.raw, run.options || {});
@@ -35,10 +42,13 @@ export async function buildPlan(c, data, options = {}) {
   const services = await c.many('SELECT id, name, match_keywords, sort FROM service_lines WHERE archived_at IS NULL ORDER BY sort, name');
   const paymoIds = data.entries.filter(e => e.paymoId != null).map(e => e.paymoId);
   const keys = data.entries.filter(e => e.paymoId == null).map(e => e.key);
-  const existing = new Set([
-    ...(await c.many('SELECT paymo_entry_id AS k FROM time_entries WHERE paymo_entry_id = ANY($1::bigint[])', [paymoIds])).map(r => `paymo:${r.k}`),
-    ...(await c.many('SELECT import_key AS k FROM time_entries WHERE import_key = ANY($1::text[])', [keys])).map(r => r.k),
-  ]);
+  const existing = new Set();
+  for (const part of chunks(paymoIds, 5000)) {
+    for (const r of await c.many('SELECT paymo_entry_id AS k FROM time_entries WHERE paymo_entry_id IN ($1)', [part])) existing.add(`paymo:${r.k}`);
+  }
+  for (const part of chunks(keys, 5000)) {
+    for (const r of await c.many('SELECT import_key AS k FROM time_entries WHERE import_key IN ($1)', [part])) existing.add(r.k);
+  }
   const entryStatus = options.entryStatus === 'draft' ? 'draft' : 'approved';
   const extraOpen = Math.max(0, Math.round(+options.extraOpenMinutes || 0));
   const defaultSvc = services.find(s => s.id === options.defaultServiceLineId) || services[0] || null;
@@ -181,10 +191,7 @@ export async function commitPlan(c, plan, actor, runId, today) {
     if (p.action === 'skip') continue;
     if (p.action === 'match') {
       userIdOf.set(p.pid, p.userId);
-      if (p.paymoId != null) {
-        const r = await c.query(`UPDATE users SET paymo_user_id = $1 WHERE id = $2 AND paymo_user_id IS NULL AND NOT EXISTS (SELECT 1 FROM users WHERE paymo_user_id = $1)`, [p.paymoId, p.userId]);
-        sum.peopleLinked += r.rowCount;
-      }
+      if (p.paymoId != null) sum.peopleLinked += await linkPaymoId(c, 'users', 'paymo_user_id', p.paymoId, p.userId);
       continue;
     }
     if (!p.entries && !(plan.tasks.size && [...plan.tasks.values()].some(t => t.assigneePid === p.pid))) continue;
@@ -193,64 +200,72 @@ export async function commitPlan(c, plan, actor, runId, today) {
       email = `${lower(p.name).replace(/[^a-z0-9]+/g, '.').replace(/^\.|\.$/g, '') || 'person'}.${crypto.randomBytes(3).toString('hex')}@import.invalid`;
       sum.placeholderEmails++;
     }
-    const row = await c.one(`INSERT INTO users (name, email, role, paymo_user_id, archived_at) VALUES ($1, $2, 'member', $3, $4) RETURNING id`,
-      [p.name, email, p.paymoId, p.active ? null : new Date()]);
-    userIdOf.set(p.pid, row.id); sum.peopleCreated++;
+    const id = crypto.randomUUID();
+    await c.query(`INSERT INTO users (id, name, email, role, paymo_user_id, archived_at) VALUES ($1, $2, $3, 'member', $4, $5)`,
+      [id, p.name, email, p.paymoId, p.active ? null : new Date()]);
+    userIdOf.set(p.pid, id); sum.peopleCreated++;
   }
   /* clients */
-  let color = (await c.one('SELECT COUNT(*)::int AS n FROM clients')).n;
+  let color = (await c.one('SELECT COUNT(*) AS n FROM clients')).n;
   for (const cl of plan.clients.values()) {
     if (cl.action === 'match') {
-      if (cl.paymoId != null) await c.query('UPDATE clients SET paymo_client_id = $1 WHERE id = $2 AND paymo_client_id IS NULL AND NOT EXISTS (SELECT 1 FROM clients WHERE paymo_client_id = $1)', [cl.paymoId, cl.clientId]);
+      if (cl.paymoId != null) await linkPaymoId(c, 'clients', 'paymo_client_id', cl.paymoId, cl.clientId);
       continue;
     }
     // Paymo allows two clients whose names differ only in case; here names are unique, so they share one.
     const same = await c.one('SELECT id FROM clients WHERE lower(name) = lower($1)', [cl.name]);
     if (same) { cl.clientId = same.id; continue; }
-    const row = await c.one(`INSERT INTO clients (name, color, paymo_client_id, archived_at) VALUES ($1, $2, $3, $4) RETURNING id`,
-      [cl.name, PALETTE[color++ % PALETTE.length], cl.paymoId, cl.active ? null : new Date()]);
-    cl.clientId = row.id; sum.clientsCreated++;
+    cl.clientId = crypto.randomUUID();
+    await c.query(`INSERT INTO clients (id, name, color, paymo_client_id, archived_at) VALUES ($1, $2, $3, $4, $5)`,
+      [cl.clientId, cl.name, PALETTE[color++ % PALETTE.length], cl.paymoId, cl.active ? null : new Date()]);
+    sum.clientsCreated++;
   }
   /* projects */
   for (const p of plan.projects.values()) {
     if (p.action === 'match') {
-      if (p.paymoId != null) await c.query('UPDATE projects SET paymo_project_id = $1 WHERE id = $2 AND paymo_project_id IS NULL AND NOT EXISTS (SELECT 1 FROM projects WHERE paymo_project_id = $1)', [p.paymoId, p.projectId]);
+      if (p.paymoId != null) await linkPaymoId(c, 'projects', 'paymo_project_id', p.paymoId, p.projectId);
       continue;
     }
     // Two Paymo projects can share a name under one client; keep both by numbering the second.
     let name = p.name, n = 1;
     while (await c.one('SELECT 1 FROM projects WHERE client_id = $1 AND lower(name) = lower($2)', [p.client.clientId, name])) name = `${p.name} (${++n})`;
-    const row = await c.one(`INSERT INTO projects (client_id, name, kind, status, paymo_project_id) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-      [p.client.clientId, name, /retainer/i.test(p.name) ? 'retainer' : 'project', p.active ? 'active' : 'done', p.paymoId]);
-    p.projectId = row.id; sum.projectsCreated++;
+    p.projectId = crypto.randomUUID();
+    await c.query(`INSERT INTO projects (id, client_id, name, kind, status, paymo_project_id) VALUES ($1, $2, $3, $4, $5, $6)`,
+      [p.projectId, p.client.clientId, name, /retainer/i.test(p.name) ? 'retainer' : 'project', p.active ? 'active' : 'done', p.paymoId]);
+    sum.projectsCreated++;
   }
   /* tasks */
   for (const t of plan.tasks.values()) {
     if (t.action === 'match') {
-      if (t.paymoId != null) await c.query('UPDATE tasks SET paymo_task_id = $1 WHERE id = $2 AND paymo_task_id IS NULL AND NOT EXISTS (SELECT 1 FROM tasks WHERE paymo_task_id = $1)', [t.paymoId, t.taskId]);
+      if (t.paymoId != null) await linkPaymoId(c, 'tasks', 'paymo_task_id', t.paymoId, t.taskId);
       continue;
     }
     if (!t.serviceLineId) throw new Error('No service line to put imported tasks on. Add a service line first.');
-    const row = await c.one(`INSERT INTO tasks (project_id, service_line_id, title, assignee_id, status, due_date, budget_minutes, billable, notes, paymo_task_id, created_by)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
-    [t.project.projectId, t.serviceLineId, t.name.slice(0, 200), userIdOf.get(t.assigneePid) || null, t.status, t.due || today, t.budget, t.billable !== false,
+    t.taskId = crypto.randomUUID();
+    await c.query(`INSERT INTO tasks (id, project_id, service_line_id, title, assignee_id, status, due_date, budget_minutes, billable, notes, paymo_task_id, created_by)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+    [t.taskId, t.project.projectId, t.serviceLineId, t.name.slice(0, 200), userIdOf.get(t.assigneePid) || null, t.status, t.due || today, t.budget, t.billable !== false,
       t.tasklistName ? `Imported from Paymo, task list “${t.tasklistName}”.` : 'Imported from Paymo.', t.paymoId, actor.id]);
-    t.taskId = row.id; sum.tasksCreated++;
+    sum.tasksCreated++;
   }
-  /* entries, in batches */
+  /* entries, in batches; each takes its task's service line and billable flag */
   const rows = plan.newEntries.filter(e => userIdOf.get(e.person.pid) && e.task.taskId);
-  for (let i = 0; i < rows.length; i += 2000) {
-    const b = rows.slice(i, i + 2000);
-    const ins = await c.many(`
-      INSERT INTO time_entries (user_id, task_id, entry_date, start_time, end_time, minutes, note, status, source, paymo_entry_id, import_key, submitted_at)
-      SELECT x.u, x.t, x.d, x.s, x.e, x.m, x.n, $10, 'import', x.p, x.k, CASE WHEN $10 = 'approved' THEN now() END
-        FROM unnest($1::uuid[], $2::uuid[], $3::date[], $4::time[], $5::time[], $6::int[], $7::text[], $8::bigint[], $9::text[]) AS x(u, t, d, s, e, m, n, p, k)
-      ON CONFLICT DO NOTHING RETURNING id, minutes`,
-    [b.map(e => userIdOf.get(e.person.pid)), b.map(e => e.task.taskId), b.map(e => e.date), b.map(e => e.start), b.map(e => e.end), b.map(e => e.minutes),
-      b.map(e => e.note || ''), b.map(e => e.paymoId), b.map(e => (e.paymoId == null ? e.key : null)), plan.entryStatus]);
+  const taskInfo = new Map();
+  for (const part of chunks([...new Set(rows.map(e => e.task.taskId))], 5000)) {
+    for (const t of await c.many('SELECT id, service_line_id, billable FROM tasks WHERE id IN ($1)', [part])) taskInfo.set(t.id, t);
+  }
+  const submittedAt = plan.entryStatus === 'approved' ? new Date() : null;
+  const detail = JSON.stringify({ runId, status: plan.entryStatus });
+  for (const part of chunks(rows, 1000)) {
+    const b = part.map(e => ({ id: crypto.randomUUID(), e, t: taskInfo.get(e.task.taskId) }));
+    // A row whose Paymo id or CSV key is already here is left alone (the import is safe to run twice).
+    await c.query(`INSERT INTO time_entries (id, user_id, task_id, entry_date, start_time, end_time, minutes, note, status, source,
+        paymo_entry_id, import_key, submitted_at, service_line_id, billable) VALUES $1 ON DUPLICATE KEY UPDATE id = id`,
+    [b.map(({ id, e, t }) => [id, userIdOf.get(e.person.pid), e.task.taskId, e.date, e.start || null, e.end || null, e.minutes, e.note || '',
+      plan.entryStatus, 'import', e.paymoId ?? null, e.paymoId == null ? e.key : null, submittedAt, t.service_line_id, t.billable])]);
+    const ins = await c.many('SELECT id, minutes FROM time_entries WHERE id IN ($1)', [b.map(x => x.id)]);
     if (ins.length) {
-      await c.query(`INSERT INTO time_entry_events (entry_id, action, actor_id, detail)
-        SELECT x, 'imported', $2, $3 FROM unnest($1::uuid[]) AS x`, [ins.map(r => r.id), actor.id, JSON.stringify({ runId, status: plan.entryStatus })]);
+      await c.query('INSERT INTO time_entry_events (entry_id, action, actor_id, detail) VALUES $1', [ins.map(r => [r.id, 'imported', actor.id, detail])]);
     }
     sum.entriesImported += ins.length; sum.minutes += ins.reduce((a, r) => a + r.minutes, 0);
   }

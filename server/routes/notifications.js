@@ -14,7 +14,7 @@ const db = { query, one, many };
 export async function refreshAndCount(userId) {
   const s = await getSettings();
   await dueReminders(db, userId, s.today);
-  return (await one('SELECT COUNT(*)::int AS n FROM notifications WHERE user_id = $1 AND read_at IS NULL', [userId])).n;
+  return (await one('SELECT COUNT(*) AS n FROM notifications WHERE user_id = $1 AND read_at IS NULL', [userId])).n;
 }
 
 r.get('/notifications', h(async (req, res) => {
@@ -27,12 +27,12 @@ r.get('/notifications', h(async (req, res) => {
 
 r.post('/notifications/read', h(async (req, res) => {
   const { ids, all } = req.body;
-  if (all) await query('UPDATE notifications SET read_at = now() WHERE user_id = $1 AND read_at IS NULL', [req.user.id]);
+  if (all) await query('UPDATE notifications SET read_at = UTC_TIMESTAMP(6) WHERE user_id = $1 AND read_at IS NULL', [req.user.id]);
   else {
     if (!Array.isArray(ids) || !ids.length || ids.length > 200 || !ids.every(i => Number.isInteger(i))) throw bad('Choose notifications to mark read.');
-    await query('UPDATE notifications SET read_at = now() WHERE user_id = $1 AND id = ANY($2::bigint[]) AND read_at IS NULL', [req.user.id, ids]);
+    await query('UPDATE notifications SET read_at = UTC_TIMESTAMP(6) WHERE user_id = $1 AND id IN ($2) AND read_at IS NULL', [req.user.id, ids]);
   }
-  res.json({ unread: (await one('SELECT COUNT(*)::int AS n FROM notifications WHERE user_id = $1 AND read_at IS NULL', [req.user.id])).n });
+  res.json({ unread: (await one('SELECT COUNT(*) AS n FROM notifications WHERE user_id = $1 AND read_at IS NULL', [req.user.id])).n });
 }));
 
 export default r;

@@ -16,7 +16,7 @@ if (fs.existsSync(file)) {
 }
 export const ROOT = root;
 export const env = {
-  DATABASE_URL: process.env.DATABASE_URL || 'postgres://fctime:fctime@localhost:5432/fctime',
+  DATABASE_URL: process.env.DATABASE_URL || 'mysql://fctime:fctime@localhost:3306/fctime',
   PORT: +(process.env.PORT || 3000),
   COOKIE_SECURE: process.env.COOKIE_SECURE === '1',
   DEMO_PASSWORD: process.env.DEMO_PASSWORD || 'fifthcolor-demo',

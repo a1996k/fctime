@@ -1,17 +1,26 @@
-// End-to-end API test of the first milestone against a real Postgres database.
-// Uses TEST_DATABASE_URL (default postgres://fctime:fctime@localhost:5432/fctime_test), which it wipes.
+// End-to-end API test of the first milestone against a real MySQL database.
+// Uses TEST_DATABASE_URL (default mysql://fctime:fctime@localhost:3306/fctime_test), which it wipes.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 
-process.env.DATABASE_URL = process.env.TEST_DATABASE_URL || 'postgres://fctime:fctime@localhost:5432/fctime_test';
+process.env.DATABASE_URL = process.env.TEST_DATABASE_URL || 'mysql://fctime:fctime@localhost:3306/fctime_test';
 const { migrate } = await import('../server/migrate.js');
 const { seedDemo } = await import('../server/seed.js');
 const { createApp } = await import('../server/app.js');
 const { query, one, closePool } = await import('../server/db.js');
 const { weekStart } = await import('../public/js/shared/time.js');
+const { localParts } = await import('../server/domain.js');
 
 const PW = 'test-password-1';
 let server, base, ids, today, ws;
+
+/** A timer entry written straight to the database (shapes the API can't produce on demand). */
+async function rawEntry(userId, taskId, date, start, end, minutes) {
+  const id = crypto.randomUUID();
+  await query(`INSERT INTO time_entries (id, user_id, task_id, entry_date, start_time, end_time, minutes, source, service_line_id, billable)
+    SELECT $1, $2, t.id, $4, $5, $6, $7, 'timer', t.service_line_id, t.billable FROM tasks t WHERE t.id = $3`, [id, userId, taskId, date, start, end, minutes]);
+  return id;
+}
 
 class Client {
   constructor(name) { this.name = name; this.cookie = ''; }
@@ -111,7 +120,7 @@ test('2. timer: one per person, survives refresh, stop is idempotent, rounding a
   assert.equal(ok(await fresh.get('/bootstrap')).timer.id, timerId);
   assert.equal(ok(await fresh.get('/timer')).timer.task_id, state.task);
   // pretend it has run for 47 minutes
-  await query(`UPDATE timers SET started_at = now() - interval '47 minutes' WHERE id = $1`, [timerId]);
+  await query(`UPDATE timers SET started_at = UTC_TIMESTAMP(6) - INTERVAL 47 MINUTE WHERE id = $1`, [timerId]);
   // two stops at once, then a late retry: exactly one entry
   const [a, b] = await Promise.all([as.casey.post('/timer/stop', { timerId }), fresh.post('/timer/stop', { timerId })]);
   const c = await as.casey.post('/timer/stop', { timerId });
@@ -119,7 +128,7 @@ test('2. timer: one per person, survives refresh, stop is idempotent, rounding a
   assert.equal(new Set([a.data.entryId, b.data.entryId, c.data.entryId]).size, 1, 'every stop returns the same entry');
   assert.equal([a.data, b.data].filter(x => !x.alreadyStopped).length, 1, 'only one stop created it');
   assert.equal(c.data.alreadyStopped, true);
-  const n = await one('SELECT COUNT(*)::int AS n FROM time_entries WHERE source_timer_id = $1', [timerId]);
+  const n = await one('SELECT COUNT(*) AS n FROM time_entries WHERE source_timer_id = $1', [timerId]);
   assert.equal(n.n, 1);
   const e = a.data.entry;
   assert.equal(e.minutes, 60, '47 minutes rounds up to 60 with 15-minute rounding');
@@ -134,13 +143,13 @@ test('2b. starting another timer saves the running one as a draft', async () => 
   const other = ok(await as.morgan.post('/tasks', { projectId: ids.P['nw-ret'], title: 'Quick fix', serviceLineId: ids.S.creative, assigneeId: ids.U.casey, dueDate: today, budget: '1:00' }), 201);
   const t1 = crypto.randomUUID(), t2 = crypto.randomUUID();
   ok(await as.casey.post('/timer/start', { taskId: other.id, timerId: t1 }), 201);
-  await query(`UPDATE timers SET started_at = now() - interval '10 minutes' WHERE id = $1`, [t1]);
+  await query(`UPDATE timers SET started_at = UTC_TIMESTAMP(6) - INTERVAL 10 MINUTE WHERE id = $1`, [t1]);
   const r = ok(await as.casey.post('/timer/start', { taskId: state.task, timerId: t2 }), 201);
   assert.ok(r.stopped, 'previous timer was stopped');
   assert.equal(r.stopped.entry.task_id, other.id);
   assert.equal(r.stopped.entry.status, 'draft');
   assert.equal(r.stopped.minutes, 10);
-  assert.equal((await one('SELECT COUNT(*)::int AS n FROM timers WHERE user_id = $1', [ids.U.casey])).n, 1, 'one active timer per person');
+  assert.equal((await one('SELECT COUNT(*) AS n FROM timers WHERE user_id = $1', [ids.U.casey])).n, 1, 'one active timer per person');
   // can't submit a week with the timer running in it
   const sub = await as.casey.post('/timesheets/submit', { weekStart: ws });
   assert.equal(sub.status, 409); assert.equal(sub.data.code, 'timer_running');
@@ -354,12 +363,23 @@ test('7. review fixes: task permissions and frozen routing', async () => {
   ok(await as.alex.post('/approvals/approve', { step: 'ae', entryIds: [e.id], versions: await versionsVia(as.alex, [e.id]) }));
   assert.equal(ok(await as.riley.get('/approvals')).find(g => g.entries.some(x => x.id === e.id)), undefined, 'not routed to the Development manager');
   assert.ok(ok(await as.jamie.get('/approvals')).some(g => g.entries.some(x => x.id === e.id)), 'still with the Creative manager');
+  // Sent back, it is open again and follows the task to Development.
+  ok(await as.jamie.post('/approvals/return', { step: 'dept', entryIds: [e.id], versions: await versionsVia(as.jamie, [e.id]), reason: 'This is Development work now' }));
+  assert.equal((await one('SELECT service_line_id FROM time_entries WHERE id = $1', [e.id])).service_line_id, ids.S.development, 'sent-back time follows the task again');
   // Approved billable time keeps its billable flag when the task changes later.
   const before = ok(await as.morgan.get(`/reports/time?from=${ws}&to=${addDays(ws, 6)}&status=approved`)).totals;
   ok(await as.morgan.patch(`/tasks/${state.task}`, { billable: false }));
   const after = ok(await as.morgan.get(`/reports/time?from=${ws}&to=${addDays(ws, 6)}&status=approved`)).totals;
   assert.deepEqual(after, before, 'approved totals unchanged');
   ok(await as.morgan.patch(`/tasks/${state.task}`, { billable: true }));
+  // Time not yet submitted follows the task's service line and billable flag (the app keeps this in step, not the database).
+  const snapEntry = async id => ({ ...(await one('SELECT service_line_id, billable FROM time_entries WHERE id = $1', [id])) });
+  const moving = ok(await as.morgan.post('/tasks', { projectId: ids.P['nw-ret'], title: 'Moving job', serviceLineId: ids.S.creative, assigneeId: ids.U.riley, dueDate: today, budget: '2' }), 201).id;
+  const draft = ok(await as.riley.post('/entries', { taskId: moving, date: today, duration: '0:15' }), 201).entry;
+  assert.deepEqual(await snapEntry(draft.id), { service_line_id: ids.S.creative, billable: true }, 'a new entry takes its task’s service line');
+  ok(await as.morgan.patch(`/tasks/${moving}`, { serviceLineId: ids.S.strategy, billable: false }));
+  assert.deepEqual(await snapEntry(draft.id), { service_line_id: ids.S.strategy, billable: false }, 'a draft moves with its task');
+  ok(await as.morgan.patch(`/tasks/${moving}`, { serviceLineId: ids.S.creative, billable: true }));
   assert.equal((await as.morgan.post('/tasks', { projectId: ids.P['nw-ret'], title: 'Huge', serviceLineId: ids.S.creative, assigneeId: ids.U.casey, dueDate: today, budgetMinutes: 2 ** 40 })).status, 400, 'budget cap');
 });
 
@@ -371,7 +391,7 @@ test('8. review fixes: entries, timers and approvals', async () => {
   const tmr = crypto.randomUUID();
   ok(await as.riley.post('/timer/start', { taskId: tid, timerId: tmr }), 201);
   assert.equal((await as.casey.post('/timer/start', { taskId: tid, timerId: tmr })).status, 409, 'someone else’s timer id reveals nothing');
-  await query(`UPDATE timers SET started_at = now() - interval '75 minutes' WHERE id = $1`, [tmr]);
+  await query(`UPDATE timers SET started_at = UTC_TIMESTAMP(6) - INTERVAL 75 MINUTE WHERE id = $1`, [tmr]);
   const over = ok(await as.riley.post('/timer/stop', { timerId: tmr })).entry;
   assert.equal(over.minutes, 75);
   ok(await as.riley.patch(`/entries/${over.id}`, { taskId: tid, date: over.date, start: over.start, end: over.end, note: 'Note added' }));
@@ -381,14 +401,14 @@ test('8. review fixes: entries, timers and approvals', async () => {
   ok(await as.morgan.patch('/settings', { roundingMinutes: 15 }));
   const t2 = crypto.randomUUID(), big = ok(await as.morgan.post('/tasks', { projectId: ids.P['nw-ret'], title: 'Rounded job', serviceLineId: ids.S.creative, assigneeId: ids.U.riley, dueDate: today, budget: '5' }), 201).id;
   ok(await as.riley.post('/timer/start', { taskId: big, timerId: t2 }), 201);
-  await query(`UPDATE timers SET started_at = now() - interval '47 minutes' WHERE id = $1`, [t2]);
+  await query(`UPDATE timers SET started_at = UTC_TIMESTAMP(6) - INTERVAL 47 MINUTE WHERE id = $1`, [t2]);
   const rounded = ok(await as.riley.post('/timer/stop', { timerId: t2 })).entry;
   ok(await as.morgan.patch('/settings', { roundingMinutes: 0 }));
   assert.equal(rounded.minutes, 60);
   const kept = ok(await as.riley.patch(`/entries/${rounded.id}`, { taskId: big, date: rounded.date, start: rounded.start, end: rounded.end, note: 'Just a note' })).entry;
   assert.equal(kept.minutes, 60, 'unchanged times keep the rounded minutes');
   // zero-length and past-midnight timer entries: no false overlaps, and they can be saved again
-  const z = (await one(`INSERT INTO time_entries (user_id, task_id, entry_date, start_time, end_time, minutes, source) VALUES ($1, $2, $3, '23:50', '00:10', 20, 'timer') RETURNING id`, [ids.U.riley, big, addDays(today, -1)])).id;
+  const z = await rawEntry(ids.U.riley, big, addDays(today, -1), '23:50', '00:10', 20);
   const late = ok(await as.riley.post('/entries', { taskId: big, date: addDays(today, -1), start: '22:00', end: '23:30' }), 201);
   assert.equal(late.overlaps.length, 0, 'an entry crossing midnight doesn’t cover the whole evening');
   ok(await as.riley.patch(`/entries/${z}`, { taskId: big, date: addDays(today, -1), start: '23:50', end: '00:10', note: 'Late fix' }));
@@ -398,7 +418,9 @@ test('8. review fixes: entries, timers and approvals', async () => {
   // a running timer blocks only the week it will land in
   const t3 = crypto.randomUUID();
   ok(await as.chris.post('/timer/start', { taskId: ids.T['Paid social plan'], timerId: t3 }), 201);
-  await query(`UPDATE timers SET started_at = (($2::date - 1) + time '23:00') AT TIME ZONE 'America/Chicago' WHERE id = $1`, [t3, ws]);
+  // started at 23:00 last Sunday, workspace time (05:00 UTC in winter, 04:00 in summer)
+  const sundayLate = [5, 4].map(hr => new Date(`${ws}T0${hr}:00:00Z`)).find(d => { const p = localParts(d, 'America/Chicago'); return p.date === addDays(ws, -1) && p.hm === '23:00'; });
+  await query('UPDATE timers SET started_at = $2 WHERE id = $1', [t3, sundayLate]);
   const lastWeek = await as.chris.post('/timesheets/submit', { weekStart: addDays(ws, -7) });
   assert.equal(lastWeek.status, 409); assert.equal(lastWeek.data.code, 'timer_running');
   ok(await as.chris.post('/entries', { taskId: ids.T['Paid social plan'], date: today, duration: '0:30' }), 201);
@@ -425,7 +447,7 @@ test('9. review fixes: people, sign-in and data hygiene', async () => {
   // archiving someone saves their running timer instead of stranding it
   ok(await as.taylor.post('/timer/start', { taskId: ids.T['Quarterly analytics review'], timerId: crypto.randomUUID() }), 201);
   ok(await as.morgan.patch(`/users/${ids.U.taylor}`, { archived: true }));
-  assert.equal((await one('SELECT COUNT(*)::int AS n FROM timers WHERE user_id = $1', [ids.U.taylor])).n, 0);
+  assert.equal((await one('SELECT COUNT(*) AS n FROM timers WHERE user_id = $1', [ids.U.taylor])).n, 0);
   assert.ok(await one(`SELECT 1 FROM time_entries WHERE user_id = $1 AND source = 'timer' AND status = 'draft'`, [ids.U.taylor]));
   assert.equal((await as.taylor.get('/bootstrap')).status, 401, 'their sessions end');
 });
@@ -441,7 +463,7 @@ test('10. re-check fixes: upload limit, overlaps with rounding, sign-in slowdown
   assert.notEqual(adminUp.status, 413, 'admins can upload large files');
   // A rounded timer entry (15:52–16:39 recorded, 60 minutes counted) doesn't overlap what comes after it.
   const task = ids.T['Portal bug fixes'];
-  await query(`INSERT INTO time_entries (user_id, task_id, entry_date, start_time, end_time, minutes, source) VALUES ($1, $2, $3, '15:52', '16:39', 60, 'timer')`, [ids.U.riley, task, addDays(today, -2)]);
+  await rawEntry(ids.U.riley, task, addDays(today, -2), '15:52', '16:39', 60);
   assert.equal(ok(await as.riley.post('/entries', { taskId: task, date: addDays(today, -2), start: '16:41', end: '16:51' }), 201).overlaps.length, 0);
   assert.equal(ok(await as.riley.post('/entries', { taskId: task, date: addDays(today, -2), start: '16:30', end: '16:40' }), 201).overlaps.length, 1, 'real overlaps are still caught');
   // Many failed sign-ins from one address slow things down but never lock out a correct password.

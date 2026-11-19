@@ -1,4 +1,5 @@
 // Tasks, time budgets, and requests for more hours.
+import crypto from 'node:crypto';
 import { Router } from 'express';
 import { one, many, query, tx } from '../db.js';
 import { h, bad, notFound, forbidden, uuidParam, str, isUUID } from '../http.js';
@@ -56,9 +57,10 @@ r.post('/tasks', h(async (req, res) => {
   const bm = budgetMinutes(req.body);
   if (!(bm > 0)) throw bad('Set a time budget, like 4 or 1:30 hours.', { field: 'budget' });
   if (o.start_date && o.start_date > o.due_date) throw bad('The due date is before the start date.');
-  const row = await one(`INSERT INTO tasks (project_id, service_line_id, title, assignee_id, status, start_date, due_date, budget_minutes, billable, notes, created_by)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, true), COALESCE($10, ''), $11) RETURNING id`,
-  [projectId, o.service_line_id, o.title, o.assignee_id, o.status, o.start_date || null, o.due_date, bm, o.billable ?? null, o.notes ?? null, req.user.id]);
+  const row = { id: crypto.randomUUID() };
+  await query(`INSERT INTO tasks (id, project_id, service_line_id, title, assignee_id, status, start_date, due_date, budget_minutes, billable, notes, created_by)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, TRUE), COALESCE($11, ''), $12)`,
+  [row.id, projectId, o.service_line_id, o.title, o.assignee_id, o.status, o.start_date || null, o.due_date, bm, o.billable ?? null, o.notes ?? null, req.user.id]);
   await notifyAssigned(db, req.user, { id: row.id, project_id: projectId, title: o.title, assignee_id: o.assignee_id, due_date: o.due_date }, true);
   res.status(201).json({ id: row.id });
 }));
@@ -89,7 +91,12 @@ r.patch('/tasks/:id', h(async (req, res) => {
     if (start && start > due) throw bad('The due date is before the start date.');
     const keys = Object.keys(o);
     if (keys.length) {
-      await c.query(`UPDATE tasks SET ${keys.map((k, i) => `${k} = $${i + 1}`).join(', ')}, updated_at = now() WHERE id = $${keys.length + 1}`, [...keys.map(k => o[k]), id]);
+      await c.query(`UPDATE tasks SET ${keys.map((k, i) => `${k} = $${i + 1}`).join(', ')}, updated_at = UTC_TIMESTAMP(6) WHERE id = $${keys.length + 1}`, [...keys.map(k => o[k]), id]);
+    }
+    // Time not yet submitted follows the task's service line and billable flag; submitted time keeps its own.
+    const svcNow = o.service_line_id ?? t.service_line_id, billNow = o.billable ?? t.billable;
+    if (svcNow !== t.service_line_id || billNow !== t.billable) {
+      await c.query(`UPDATE time_entries SET service_line_id = $1, billable = $2 WHERE task_id = $3 AND status IN ('draft', 'rejected')`, [svcNow, billNow, id]);
     }
     if (o.assignee_id && o.assignee_id !== t.assignee_id) await notifyAssigned(c, req.user, { ...t, ...o }, false);
   });
@@ -117,7 +124,7 @@ r.get('/tasks/:id/time', h(async (req, res) => {
   if (!t) throw notFound();
   const [entries, budgetLog, requests] = await Promise.all([
     // Same visibility as reports: team members see their own entries here; the logged total still counts everyone.
-    many(`SELECT e.id, e.user_id, eu.name AS user_name, e.entry_date::text AS date, e.minutes, e.note, e.status
+    many(`SELECT e.id, e.user_id, eu.name AS user_name, e.entry_date AS date, e.minutes, e.note, e.status
             FROM time_entries e ${ENTRY_JOINS} WHERE e.task_id = $1 AND ${visibleEntrySql(req.user, 2)}
            ORDER BY e.entry_date DESC, e.created_at DESC LIMIT 50`, isAdmin(req.user) ? [id] : [id, req.user.id]),
     many(`SELECT b.minutes, b.reason, b.at, u.name AS actor_name FROM task_budget_log b JOIN users u ON u.id = b.actor_id WHERE b.task_id = $1 ORDER BY b.at DESC`, [id]),
@@ -141,7 +148,7 @@ r.post('/tasks/:id/budget', requireAdmin, h(async (req, res) => {
   const out = await tx(async c => {
     const t = await c.one('SELECT budget_minutes FROM tasks WHERE id = $1 FOR UPDATE', [id]);
     if (!t) throw notFound();
-    await c.query('UPDATE tasks SET budget_minutes = budget_minutes + $1, updated_at = now() WHERE id = $2', [minutes, id]);
+    await c.query('UPDATE tasks SET budget_minutes = budget_minutes + $1, updated_at = UTC_TIMESTAMP(6) WHERE id = $2', [minutes, id]);
     await c.query('INSERT INTO task_budget_log (task_id, minutes, reason, actor_id) VALUES ($1, $2, $3, $4)', [id, minutes, reason, req.user.id]);
     const x = await c.one('SELECT title, project_id, assignee_id FROM tasks WHERE id = $1', [id]);
     await notify(c, [x.assignee_id], 'hours', `More time on ${x.title}`, `${req.user.name} added ${hm(minutes)}: ${reason}`, taskLink(x.project_id, id), { actorId: req.user.id });
@@ -157,8 +164,9 @@ r.post('/tasks/:id/hours-requests', h(async (req, res) => {
   if (await one(`SELECT 1 FROM hours_requests WHERE task_id = $1 AND requested_by = $2 AND status = 'pending'`, [id, req.user.id])) {
     throw bad('You already have a request waiting on this task.');
   }
-  const q = await one('INSERT INTO hours_requests (task_id, requested_by, minutes, reason) VALUES ($1, $2, $3, $4) RETURNING id', [id, req.user.id, minutes, reason])
-    .catch(e => { if (e.code === '23505') throw bad('You already have a request waiting on this task.'); throw e; });
+  const q = { id: crypto.randomUUID() };
+  await query('INSERT INTO hours_requests (id, task_id, requested_by, minutes, reason) VALUES ($1, $2, $3, $4, $5)', [q.id, id, req.user.id, minutes, reason])
+    .catch(e => { if (e.code === 'ER_DUP_ENTRY') throw bad('You already have a request waiting on this task.'); throw e; });
   const x = await one(`SELECT t.title, cl.name AS client_name FROM tasks t JOIN projects p ON p.id = t.project_id JOIN clients cl ON cl.id = p.client_id WHERE t.id = $1`, [id]);
   await notify(db, await adminIds(db), 'hours', `${req.user.name} asked for more time`, `${hm(minutes)} on “${x.title}”, ${x.client_name}: ${reason}`, '#/time/hours', { actorId: req.user.id });
   res.status(201).json({ id: q.id });
@@ -168,7 +176,7 @@ r.get('/hours-requests', h(async (req, res) => {
   const rows = await many(`
     SELECT q.id, q.task_id, q.minutes, q.reason, q.status, q.created_at, q.decided_at, q.decision_note,
            q.requested_by, ru.name AS requested_by_name, du.name AS decided_by_name,
-           t.title AS task_title, t.budget_minutes, COALESCE(l.m, 0)::int AS logged_minutes,
+           t.title AS task_title, t.budget_minutes, COALESCE(l.m, 0) AS logged_minutes,
            p.name AS project_name, c.name AS client_name
       FROM hours_requests q
       JOIN tasks t ON t.id = q.task_id JOIN projects p ON p.id = t.project_id JOIN clients c ON c.id = p.client_id
@@ -187,10 +195,10 @@ r.post('/hours-requests/:id/:decision', requireAdmin, h(async (req, res) => {
     const q = await c.one('SELECT * FROM hours_requests WHERE id = $1 FOR UPDATE', [id]);
     if (!q) throw notFound();
     if (q.status !== 'pending') throw bad('That request was already decided.');
-    await c.query(`UPDATE hours_requests SET status = $1, decided_by = $2, decided_at = now(), decision_note = $3 WHERE id = $4`,
+    await c.query(`UPDATE hours_requests SET status = $1, decided_by = $2, decided_at = UTC_TIMESTAMP(6), decision_note = $3 WHERE id = $4`,
       [d === 'approve' ? 'approved' : 'declined', req.user.id, note || null, id]);
     if (d === 'approve') {
-      await c.query('UPDATE tasks SET budget_minutes = budget_minutes + $1, updated_at = now() WHERE id = $2', [q.minutes, q.task_id]);
+      await c.query('UPDATE tasks SET budget_minutes = budget_minutes + $1, updated_at = UTC_TIMESTAMP(6) WHERE id = $2', [q.minutes, q.task_id]);
       await c.query('INSERT INTO task_budget_log (task_id, minutes, reason, actor_id, request_id) VALUES ($1, $2, $3, $4, $5)',
         [q.task_id, q.minutes, q.reason, req.user.id, id]);
     }

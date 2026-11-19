@@ -1,5 +1,6 @@
 // Admin-only Paymo import: fetch (API key) or upload (CSV), preview, adjust, import.
 // The API key is used for the fetch only and never stored.
+import crypto from 'node:crypto';
 import { Router } from 'express';
 import { one, many, query, tx } from '../db.js';
 import { h, bad, notFound, conflict, uuidParam, str, isUUID } from '../http.js';
@@ -14,6 +15,13 @@ const r = Router();
 r.use('/import', requireAdmin);
 const db = { query, one, many };
 const RUN_COLS = 'id, source, status, label, options, raw, summary, created_at, imported_at';
+// The copy of Paymo's data is kept as text (a large CSV outgrows MySQL's JSON limits); parse it on the way out.
+const parseRun = run => { if (run && typeof run.raw === 'string') run.raw = JSON.parse(run.raw || '{}'); return run; };
+async function createRun(source, label, raw, userId) {
+  const run = { id: crypto.randomUUID(), source, status: 'preview', label, options: {}, raw, summary: null, created_at: new Date(), imported_at: null };
+  await query('INSERT INTO import_runs (id, source, label, raw, created_by) VALUES ($1, $2, $3, $4, $5)', [run.id, source, label, JSON.stringify(raw), userId]);
+  return run;
+}
 
 async function preview(run) {
   const settings = await getSettings();
@@ -22,7 +30,7 @@ async function preview(run) {
   return previewOf(plan, run);
 }
 async function loadRun(id) {
-  const run = await one(`SELECT ${RUN_COLS} FROM import_runs WHERE id = $1`, [uuidParam(id)]);
+  const run = parseRun(await one(`SELECT ${RUN_COLS} FROM import_runs WHERE id = $1`, [uuidParam(id)]));
   if (!run) throw notFound('That import doesn’t exist.');
   return run;
 }
@@ -37,8 +45,7 @@ r.post('/import/paymo/fetch', h(async (req, res) => {
   if (!isISODate(from) || !isISODate(to) || to < from) throw bad('Choose the dates to bring over.');
   if (from < addDays(to, -366 * 3)) throw bad('Bring over three years at most in one go.');
   const raw = await fetchPaymo({ apiKey: String(apiKey || '').trim(), from, to });
-  const run = await one(`INSERT INTO import_runs (source, label, raw, created_by) VALUES ('paymo-api', $1, $2, $3) RETURNING ${RUN_COLS}`,
-    [`Paymo ${raw.account ? `(${raw.account}) ` : ''}${from} to ${to}`, JSON.stringify(raw), req.user.id]);
+  const run = await createRun('paymo-api', `Paymo ${raw.account ? `(${raw.account}) ` : ''}${from} to ${to}`, raw, req.user.id);
   res.status(201).json(await preview(run));
 }));
 
@@ -49,8 +56,7 @@ r.post('/import/paymo/csv', h(async (req, res) => {
   if (rows.length < 2) throw bad('The file needs a header row and at least one entry.');
   if (rows.length > 200001) throw bad('Split the file: it has more than 200,000 rows.');
   const name = str(req.body.filename, { label: 'File name', max: 200 }) || 'pasted text';
-  const run = await one(`INSERT INTO import_runs (source, label, raw, created_by) VALUES ('paymo-csv', $1, $2, $3) RETURNING ${RUN_COLS}`,
-    [`CSV: ${name}`, JSON.stringify({ rows }), req.user.id]);
+  const run = await createRun('paymo-csv', `CSV: ${name}`, { rows }, req.user.id);
   res.status(201).json(await preview(run));
 }));
 
@@ -96,7 +102,7 @@ r.patch('/import/runs/:id', h(async (req, res) => {
 r.post('/import/runs/:id/commit', h(async (req, res) => {
   const id = uuidParam(req.params.id);
   const summary = await tx(async c => {
-    const run = await c.one(`SELECT ${RUN_COLS} FROM import_runs WHERE id = $1 FOR UPDATE`, [id]);
+    const run = parseRun(await c.one(`SELECT ${RUN_COLS} FROM import_runs WHERE id = $1 FOR UPDATE`, [id]));
     if (!run) throw notFound('That import doesn’t exist.');
     if (run.status !== 'preview') throw conflict('This import already ran.');
     const settings = await getSettings(c);
@@ -104,7 +110,7 @@ r.post('/import/runs/:id/commit', h(async (req, res) => {
     if (!plan.newEntries.length && ![...plan.tasks.values()].some(t => t.action === 'create')) throw bad('Nothing new to import.');
     const sum = await commitPlan(c, plan, req.user, run.id, settings.today);
     // Keep the counts; drop the copy of Paymo's data now that it's in the app.
-    await c.query(`UPDATE import_runs SET status = 'imported', summary = $1, imported_at = now(), raw = '{}'::jsonb WHERE id = $2`, [JSON.stringify(sum), run.id]);
+    await c.query(`UPDATE import_runs SET status = 'imported', summary = $1, imported_at = UTC_TIMESTAMP(6), raw = '{}' WHERE id = $2`, [JSON.stringify(sum), run.id]);
     return sum;
   });
   res.json(summary);
@@ -113,7 +119,7 @@ r.post('/import/runs/:id/commit', h(async (req, res) => {
 r.post('/import/runs/:id/discard', h(async (req, res) => {
   const run = await loadRun(req.params.id);
   if (run.status !== 'preview') throw conflict('Only an unfinished import can be discarded.');
-  await query(`UPDATE import_runs SET status = 'discarded', raw = '{}'::jsonb WHERE id = $1`, [run.id]);
+  await query(`UPDATE import_runs SET status = 'discarded', raw = '{}' WHERE id = $1`, [run.id]);
   res.json({ ok: true });
 }));
 

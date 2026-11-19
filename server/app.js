@@ -39,9 +39,17 @@ export function createApp() {
     if (err.type === 'entity.parse.failed') err = new HttpError(400, 'That request wasn’t valid JSON.');
     if (err.type === 'entity.too.large') err = new HttpError(413, 'That request is too large.');
     // Database constraint errors are bad input, not server faults.
-    const PG = { 23505: [409, 'That already exists.'], 23503: [400, 'That refers to something that doesn’t exist.'], 23514: [400, 'That value isn’t allowed.'],
-      '22P02': [400, 'That value isn’t valid.'], 22003: [400, 'That number is out of range.'], 22007: [400, 'That date or time isn’t valid.'], 22008: [400, 'That date or time isn’t valid.'] };
-    if (err.code && PG[err.code]) err = new HttpError(...PG[err.code]);
+    const DB = {
+      ER_DUP_ENTRY: [409, 'That already exists.'],
+      ER_NO_REFERENCED_ROW: [400, 'That refers to something that doesn’t exist.'], ER_NO_REFERENCED_ROW_2: [400, 'That refers to something that doesn’t exist.'],
+      ER_ROW_IS_REFERENCED_2: [409, 'Something else still uses that.'],
+      ER_CHECK_CONSTRAINT_VIOLATED: [400, 'That value isn’t allowed.'], ER_BAD_NULL_ERROR: [400, 'A required value is missing.'],
+      ER_TRUNCATED_WRONG_VALUE: [400, 'That value isn’t valid.'], ER_TRUNCATED_WRONG_VALUE_FOR_FIELD: [400, 'That value isn’t valid.'],
+      ER_WRONG_VALUE: [400, 'That value isn’t valid.'], ER_INVALID_JSON_TEXT: [400, 'That value isn’t valid.'],
+      ER_WARN_DATA_OUT_OF_RANGE: [400, 'That number is out of range.'], ER_DATA_TOO_LONG: [400, 'That text is too long.'],
+      ER_NET_PACKET_TOO_LARGE: [413, 'That is too large for the database. Split the file, or raise MySQL’s max_allowed_packet.'],
+    };
+    if (err.code && DB[err.code]) err = new HttpError(...DB[err.code]);
     const status = err.status && err.status < 600 ? err.status : 500;
     if (status >= 500) console.error(err);
     res.status(status).json({ error: status >= 500 ? 'Something went wrong on the server.' : err.message, ...(err.extra || {}) });

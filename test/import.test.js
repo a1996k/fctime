@@ -3,7 +3,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
 
-process.env.DATABASE_URL = process.env.TEST_DATABASE_URL || 'postgres://fctime:fctime@localhost:5432/fctime_test';
+process.env.DATABASE_URL = process.env.TEST_DATABASE_URL || 'mysql://fctime:fctime@localhost:3306/fctime_test';
 const { migrate } = await import('../server/migrate.js');
 const { seedDemo } = await import('../server/seed.js');
 const { createApp } = await import('../server/app.js');
@@ -159,10 +159,10 @@ test('API import: choices in the preview, then import', async () => {
   const dana = await one(`SELECT id, role, password_hash, paymo_user_id, archived_at FROM users WHERE email = 'dana@fifthcolor.example'`);
   assert.equal(dana.role, 'member'); assert.equal(dana.password_hash, null); assert.equal(dana.paymo_user_id, 502);
   assert.equal((await one(`SELECT paymo_user_id FROM users WHERE email = 'casey@fifthcolor.example'`)).paymo_user_id, 501);
-  const e1 = await one(`SELECT entry_date::text AS d, to_char(start_time, 'HH24:MI') AS s, to_char(end_time, 'HH24:MI') AS e, minutes, status, source, note FROM time_entries WHERE paymo_entry_id = 5001`);
+  const e1 = await one(`SELECT entry_date AS d, TIME_FORMAT(start_time, '%H:%i') AS s, TIME_FORMAT(end_time, '%H:%i') AS e, minutes, status, source, note FROM time_entries WHERE paymo_entry_id = 5001`);
   assert.deepEqual(e1, { d: '2026-11-10', s: '09:00', e: '11:30', minutes: 150, status: 'approved', source: 'import', note: 'Hero section' }, 'UTC times land in Chicago time');
   assert.equal((await one('SELECT note FROM time_entries WHERE paymo_entry_id = 5002')).note, 'Nav', 'HTML stripped from descriptions');
-  const hb = await one(`SELECT t.budget_minutes, t.due_date::text AS due, t.status, t.assignee_id, t.service_line_id, t.paymo_task_id, p.name AS project, c.name AS client
+  const hb = await one(`SELECT t.budget_minutes, t.due_date AS due, t.status, t.assignee_id, t.service_line_id, t.paymo_task_id, p.name AS project, c.name AS client
                           FROM tasks t JOIN projects p ON p.id = t.project_id JOIN clients c ON c.id = p.client_id WHERE t.title = 'Homepage build'`);
   assert.deepEqual(hb, { budget_minutes: 1200, due: '2026-12-01', status: 'doing', assignee_id: dana.id, service_line_id: ids.S.development, paymo_task_id: 1002, project: 'Website 2026', client: 'Lakeside Brewing' });
   const ta = await one(`SELECT service_line_id, billable, assignee_id FROM tasks WHERE title = 'Timesheets admin'`);
@@ -217,7 +217,7 @@ test('CSV import: columns, matching, duplicates and re-import', async () => {
   const np = await one(`SELECT email, role FROM users WHERE name = 'New Person'`);
   assert.match(np.email, /@import\.invalid$/);
   assert.equal(await new Client().login(np.email, 'anything'), 400, 'imported people can’t sign in until given a password');
-  const e = await many(`SELECT to_char(start_time, 'HH24:MI') AS s, to_char(end_time, 'HH24:MI') AS e, note FROM time_entries e JOIN users u ON u.id = e.user_id WHERE u.name = 'Casey Diaz' AND e.source = 'import' AND e.entry_date = '2026-11-16'`);
+  const e = await many(`SELECT TIME_FORMAT(start_time, '%H:%i') AS s, TIME_FORMAT(end_time, '%H:%i') AS e, note FROM time_entries e JOIN users u ON u.id = e.user_id WHERE u.name = 'Casey Diaz' AND e.source = 'import' AND e.entry_date = '2026-11-16'`);
   assert.deepEqual(e.map(x => [x.s, x.e]), [['09:00', '10:30'], ['09:00', '10:30']]);
   assert.equal((await one(`SELECT note FROM time_entries WHERE note LIKE 'Kickoff%'`)).note, 'Kickoff call, with "quotes"');
   // the same file again adds nothing

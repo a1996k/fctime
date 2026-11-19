@@ -38,7 +38,7 @@ function setCookie(res, value, maxAgeSec) {
 
 export async function createSession(res, userId) {
   const token = crypto.randomBytes(32).toString('base64url');
-  await query(`INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, now() + interval '${SESSION_DAYS} days')`, [sha(token), userId]);
+  await query(`INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, UTC_TIMESTAMP(6) + INTERVAL ${SESSION_DAYS} DAY)`, [sha(token), userId]);
   setCookie(res, token, SESSION_DAYS * 86400);
 }
 export async function destroySession(req, res) {
@@ -55,7 +55,7 @@ export async function loadUser(req, _res, next) {
       req.user = await one(
         `SELECT u.id, u.name, u.email, u.role, u.dept_id, u.capacity
            FROM sessions s JOIN users u ON u.id = s.user_id
-          WHERE s.token_hash = $1 AND s.expires_at > now() AND u.archived_at IS NULL`, [sha(t)]);
+          WHERE s.token_hash = $1 AND s.expires_at > UTC_TIMESTAMP(6) AND u.archived_at IS NULL`, [sha(t)]);
       if (req.user) req.sessionHash = sha(t);
     }
     next();

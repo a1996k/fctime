@@ -29,9 +29,9 @@ function readFilters(q) {
 async function reportRows(viewer, f) {
   const p = [f.from, f.to], where = ['e.entry_date BETWEEN $1 AND $2'];
   const add = v => { p.push(v); return `$${p.length}`; };
-  if (f.clients.length) where.push(`c.id = ANY(${add(f.clients)}::uuid[])`);
-  if (f.projects.length) where.push(`p.id = ANY(${add(f.projects)}::uuid[])`);
-  if (f.users.length) where.push(`e.user_id = ANY(${add(f.users)}::uuid[])`);
+  if (f.clients.length) where.push(`c.id IN (${add(f.clients)})`);
+  if (f.projects.length) where.push(`p.id IN (${add(f.projects)})`);
+  if (f.users.length) where.push(`e.user_id IN (${add(f.users)})`);
   if (f.billable === 'bill') where.push('e.billable');
   if (f.billable === 'non') where.push('NOT e.billable');
   if (f.status === 'approved') where.push(`e.status = 'approved'`);
@@ -39,7 +39,7 @@ async function reportRows(viewer, f) {
   else if (f.status !== 'all') where.push(`e.status = ${add(f.status)}`);
   if (!isAdmin(viewer)) { p.push(viewer.id); where.push(visibleEntrySql(viewer, p.length)); }
   return many(`SELECT ${ENTRY_COLUMNS}, sl.rate FROM time_entries e ${ENTRY_JOINS} WHERE ${where.join(' AND ')}
-                ORDER BY e.entry_date, eu.name, e.start_time NULLS LAST, e.created_at`, p);
+                ORDER BY e.entry_date, eu.name, e.start_time IS NULL, e.start_time, e.created_at`, p);
 }
 function totals(rows) {
   const t = { entries: rows.length, minutes: 0, billable: 0, nonBillable: 0 };

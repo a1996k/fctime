@@ -51,4 +51,4 @@ Each line names the wireframe function(s) to trace when the work starts. The sch
 
 **Platform**
 - Theme switch (light, dark, high contrast); the tokens are already in `fc.css`, and the app follows the system setting.
-- SSO (Google Workspace), password reset by email, a production deployment (managed Postgres, HTTPS with `COOKIE_SECURE=1`).
+- SSO (Google Workspace), password reset by email, a production deployment (managed MySQL, HTTPS with `COOKIE_SECURE=1`).
