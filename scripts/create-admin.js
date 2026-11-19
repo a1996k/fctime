@@ -3,7 +3,7 @@
 //   npm run admin:create -- --email you@fifthcolor.com --name "Your Name"
 //
 // It asks for the password twice without showing it. With no terminal (some hosting consoles),
-// it reads ADMIN_PASSWORD instead. If the email already belongs to someone, that person becomes an
+// it reads NEW_PASSWORD instead. If the email already belongs to someone, that person becomes an
 // active admin with the new password, and every session they had is signed out.
 import crypto from 'node:crypto';
 import '../server/env.js';
@@ -45,9 +45,9 @@ const existing = found && found.email.toLowerCase() === email ? found : null; //
 if (found && !existing) await die(`That address is too close to ${found.email}, which is already in use.`);
 if (!existing && !name) await die('Nobody uses that email yet. Give their name too: --name "Your Name"');
 
-let password = process.env.ADMIN_PASSWORD || '';
+let password = process.env.NEW_PASSWORD || '';
 if (!password) {
-  if (!process.stdin.isTTY) await die('There’s no terminal to ask for a password. Set ADMIN_PASSWORD for this one command instead.');
+  if (!process.stdin.isTTY) await die('There’s no terminal to ask for a password. Set NEW_PASSWORD for this one command instead.');
   password = await askHidden('Password (at least 8 characters): ');
   if (password !== await askHidden('Type it again: ')) await die('Those passwords don’t match. Nothing was changed.');
 }

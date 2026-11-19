@@ -66,7 +66,7 @@ const TASKS = [
 export async function seedDemo({ password, log = console.log } = {}) {
   const pwHash = await hashPassword(password);
   return tx(async c => {
-    if (await c.one('SELECT 1 FROM users LIMIT 1')) throw new Error('The database already has users. Run `npm run db:reset` to start over.');
+    if (await c.one(`SELECT 1 FROM users WHERE email <> 'admin' LIMIT 1`)) throw new Error('The database already has users. Run `npm run db:reset` to start over.');
     const { time_zone: tz } = await c.one('SELECT time_zone FROM settings WHERE id = 1');
     const today = localParts(new Date(), tz).date;
     const ws = weekStart(today);

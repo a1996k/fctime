@@ -26,4 +26,6 @@ export const env = {
   PORT: +(process.env.PORT || 3000),
   COOKIE_SECURE: process.env.COOKIE_SECURE === '1',
   DEMO_PASSWORD: process.env.DEMO_PASSWORD || 'fifthcolor-demo',
+  // Password for the built-in “admin” login (see server/builtin-admin.js). Empty: no such login.
+  ADMIN_PASSWORD: process.env.ADMIN_PASSWORD || '',
 };

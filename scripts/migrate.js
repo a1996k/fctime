@@ -10,7 +10,7 @@ if (reset) {
     process.exit(1);
   }
   // Only throw away a database that holds nothing but demo data, unless told to.
-  const demo = new Set(DEMO_USERS.map(u => u.email));
+  const demo = new Set([...DEMO_USERS.map(u => u.email), 'admin']); // the built-in admin comes back from .env
   let others = [];
   try { others = (await many('SELECT email FROM users')).map(r => r.email).filter(e => !demo.has(e)); } catch { /* new database: no users table yet */ }
   if (others.length && !force) {

@@ -10,6 +10,8 @@ const { createApp } = await import('../server/app.js');
 const { query, one, closePool } = await import('../server/db.js');
 const { weekStart } = await import('../public/js/shared/time.js');
 const { localParts } = await import('../server/domain.js');
+const { env } = await import('../server/env.js');
+const { ensureBuiltinAdmin } = await import('../server/builtin-admin.js');
 
 const PW = 'test-password-1';
 let server, base, ids, today, ws;
@@ -496,6 +498,46 @@ test('11. pre-launch review fixes: exact sign-in email, deletes, input types, id
   // Lists where text is expected are bad input, not server errors.
   assert.equal((await as.riley.post('/entries', { taskId: task, date: today, start: ['09:00'], end: '10:00' })).status, 400);
   assert.equal((await as.riley.get(`/entries/overlaps?date=${today}&start=09:00&start=10:00&end=11:00`)).status, 400);
+});
+
+test('12. built-in admin login: username “admin”, password from .env', async () => {
+  const saved = env.ADMIN_PASSWORD;
+  const login = (email, password) => fetch(base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': '203.0.113.12' }, body: JSON.stringify({ email, password }) });
+  try {
+    env.ADMIN_PASSWORD = 'short';
+    await assert.rejects(ensureBuiltinAdmin(() => {}), /at least 12 characters/);
+    env.ADMIN_PASSWORD = 'fifthcolor-demo';
+    await assert.rejects(ensureBuiltinAdmin(() => {}), /demo password/);
+    assert.equal(await one(`SELECT id FROM users WHERE email = 'admin'`), null, 'nothing was created with a weak password');
+
+    env.ADMIN_PASSWORD = 'first-admin-password';
+    await ensureBuiltinAdmin(() => {});
+    const r = await login('admin', 'first-admin-password');
+    assert.equal(r.status, 200);
+    const admin = new Client('builtin'); admin.cookie = r.headers.get('set-cookie').split(';')[0];
+    const me = ok(await admin.get('/bootstrap')).me;
+    assert.equal(me.role, 'admin'); assert.equal(me.name, 'Admin');
+    assert.equal((await login('Admin', 'first-admin-password')).status, 200, 'any letter case');
+    // Its sign-in is managed in .env, not in the app; its name can still change.
+    assert.match((await admin.post('/auth/password', { current: 'first-admin-password', next: 'something-else-1' })).data.error, /ADMIN_PASSWORD/);
+    assert.equal((await as.morgan.patch(`/users/${me.id}`, { archived: true })).status, 400);
+    assert.equal((await as.morgan.patch(`/users/${me.id}`, { role: 'member' })).status, 400);
+    assert.equal((await as.morgan.patch(`/users/${me.id}`, { password: 'another-password-1' })).status, 400);
+    ok(await as.morgan.patch(`/users/${me.id}`, { name: 'Studio admin', email: 'admin' }));
+    // A new password in .env takes over at the next start and signs out the old sessions.
+    env.ADMIN_PASSWORD = 'second-admin-password';
+    await ensureBuiltinAdmin(() => {});
+    assert.equal((await login('admin', 'first-admin-password')).status, 400);
+    assert.equal((await login('admin', 'second-admin-password')).status, 200);
+    assert.equal((await admin.get('/bootstrap')).status, 401, 'the old session ended');
+    assert.equal((await one(`SELECT COUNT(*) AS n FROM users WHERE email = 'admin'`)).n, 1, 'still one account');
+    // Without ADMIN_PASSWORD it's an ordinary account that admins manage in the app.
+    env.ADMIN_PASSWORD = '';
+    ok(await as.morgan.patch(`/users/${me.id}`, { archived: true }));
+    assert.equal((await login('admin', 'second-admin-password')).status, 400, 'archived');
+  } finally {
+    env.ADMIN_PASSWORD = saved;
+  }
 });
 
 function addMin(hm, n) { const [h, m] = hm.split(':').map(Number), t = h * 60 + m + n; return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`; }

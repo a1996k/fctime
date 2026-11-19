@@ -22,7 +22,7 @@ function loginScreen(err) {
       <div class="login-brand">${LOGO}<span class="sb-app">Time tracker</span></div>
       <h1 class="h2">Sign in</h1>
       ${err ? `<div class="fc-alert fc-alert--danger" role="alert"><span class="fc-alert__icon">${icon('Alert')}</span><div class="fc-alert__body"><div class="fc-alert__text">${esc(err)}</div></div></div>` : ''}
-      ${field('Email', inp('email', localStorage.getItem('fct-email') || '', { type: 'email', required: true, autocomplete: 'username' }), { id: 'f-email' })}
+      ${field('Email or username', inp('email', localStorage.getItem('fct-email') || '', { type: 'text', required: true, autocomplete: 'username' }), { id: 'f-email' })}
       ${field('Password', inp('password', '', { type: 'password', required: true, autocomplete: 'current-password' }), { id: 'f-password' })}
       ${btn('Sign in', { variant: 'primary', type: 'submit', size: 'lg' })}
     </form></div>`;

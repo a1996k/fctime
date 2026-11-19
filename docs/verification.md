@@ -14,10 +14,15 @@ The app first ran on PostgreSQL 16; it now runs on MySQL 8 to match FifthColor�
 Run before going live, against a production-mode server (`NODE_ENV=production`) on an empty database, and against a large copy of history.
 
 **Production setup**
-- `npm run admin:create` creates the first admin on an empty database, both by the hidden password prompt and with `ADMIN_PASSWORD`. It refuses short or mismatched passwords and a missing name, and given an existing email it restores that person as an admin and signs out their old sessions.
+- `npm run admin:create` creates the first admin on an empty database, both by the hidden password prompt and with `NEW_PASSWORD`. It refuses short or mismatched passwords and a missing name, and given an existing email it restores that person as an admin and signs out their old sessions.
 - The demo seed refuses to run with `NODE_ENV=production`, and on any database that already has people. `db:reset` refuses with `NODE_ENV=production`, and when the database holds anyone but the demo users (unless `--force`). With `NODE_ENV=production` the app won’t start without `DATABASE_URL`.
 - Signed in over HTTPS (through a trusted proxy), the session cookie is `Secure` and responses carry `Strict-Transport-Security`. Every response has a Content-Security-Policy that allows only the app’s own scripts. The browser walk-through below runs under it with no errors.
 - A new admin on an empty workspace can open every page with no browser errors.
+- **Admin login from `.env`:**
+  - With `ADMIN_PASSWORD` set, the server creates an admin with the username `admin` at start, and signing in as `admin` on the real sign-in page works.
+  - A password under 12 characters, or the demo password, stops the server with a message and creates nothing.
+  - A changed password takes over at the next start and signs out the old sessions.
+  - While `.env` controls the account, the app refuses to archive it, demote it or give it another password.
 - On a restart (`SIGTERM`), the server finishes the requests in flight and closes the database pool.
 - `npm audit`: no known vulnerabilities in the dependencies.
 
@@ -58,7 +63,7 @@ The script drives the real UI in Chromium. To give the timer a realistic duratio
 
 Screenshots: [Home with timer](screenshots/home-timer.png), [calendar drag](screenshots/calendar-drag.png), [notifications](screenshots/notifications.png), [manager approval](screenshots/approvals.png), [report](screenshots/report.png), [import preview](screenshots/import-preview.png). The script saves a full set to `verify-output/`.
 
-## API, import and unit tests: `npm test` (28 tests, all passing)
+## API, import and unit tests: `npm test` (29 tests, all passing)
 
 **`test/flow.test.js`** covers the whole milestone through the API, plus the rules a browser can’t prove:
 
@@ -80,6 +85,7 @@ Screenshots: [Home with timer](screenshots/home-timer.png), [calendar drag](scre
 - **People and sign-in:** role and department validation, bill rates hidden from team members, changing your own password, and archiving someone saves their running timer as a draft.
 - **Re-check fixes:** large uploads refused before sign-in, rounded timer entries don't overlap what follows, and failed sign-ins slow an address down without locking out a correct password.
 - **Pre-launch review fixes:** only the exact email signs in; deletes work without a body, as the page sends them; lists where text belongs and uppercase ids are refused.
+- **Admin login from `.env`:** weak passwords are refused, a new password in `.env` replaces the old one and ends its sessions, and the app leaves its sign-in to `.env`.
 
 **`test/import.test.js`** runs the Paymo import against a stand-in Paymo API and a CSV export:
 

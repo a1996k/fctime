@@ -77,6 +77,16 @@ npm i -D playwright && npx playwright install chromium
 - There are no triggers, stored procedures or events, so the app’s database user needs only ordinary table privileges. That works with binary logging on and on managed MySQL services.
 - A web Paymo import keeps a copy of the fetched data or uploaded file until you import or discard it. One web import takes up to 50,000 entries (about 6 MB stored), well within MySQL 8’s default `max_allowed_packet` of 64 MB. The command-line import has no limit and stores no copy.
 
+### Admin login from `.env`
+
+To sign in as an admin without the demo people, add a password of at least 12 characters to `.env`:
+
+```
+ADMIN_PASSWORD=choose-a-long-password
+```
+
+Each time the server starts, it makes sure there's an admin with the username `admin` and that password. Type `admin` in the Email or username box to sign in. To change the password, edit `.env` and restart; that also signs out the old sessions. While `ADMIN_PASSWORD` is set, the app won't archive this account, change its role or give it another password. Remove the line to manage it in Settings like anyone else.
+
 ## Demo sign-in
 
 Every demo user’s password is `fifthcolor-demo` (set `DEMO_PASSWORD` in `.env` before seeding to change it). Demo data is for development only: with `NODE_ENV=production` the seed refuses to run. People, clients and tasks come from the wireframe’s sample data, with dates moved to the current weeks.

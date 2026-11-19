@@ -6,6 +6,7 @@ import { h, bad, conflict, notFound, forbidden, uuidParam, str, isUUID } from '.
 import { createSession, destroySession, verifyPassword, hashPassword, requireUser, requireAdmin, throttleLogin, clearLoginThrottle, checkThrottle, recordFailure, slowDown } from '../auth.js';
 import { getSettings, isAdmin, isMgr, ROLES, stepScopeSql, ENTRY_JOINS, stopTimerRow } from '../domain.js';
 import { refreshAndCount } from './notifications.js';
+import { isBuiltinManaged } from '../builtin-admin.js';
 
 const r = Router();
 const COLOR = /^#[0-9a-fA-F]{6}$/;
@@ -38,6 +39,7 @@ r.post('/auth/logout', h(async (req, res) => { await destroySession(req, res); r
 /** Anyone signed in can change their own password. */
 r.post('/auth/password', requireUser, h(async (req, res) => {
   const current = String(req.body.current || ''), next = String(req.body.next || '');
+  if (isBuiltinManaged(req.user)) throw bad('This login’s password is set by ADMIN_PASSWORD in the server’s .env file. Change it there and restart.');
   throttleLogin(`pw|${req.user.id}`);
   const u = await one('SELECT password_hash FROM users WHERE id = $1', [req.user.id]);
   if (!(await verifyPassword(current, u.password_hash))) throw bad('Your current password isn’t right.', { field: 'current' });
@@ -107,9 +109,13 @@ r.patch('/users/:id', requireAdmin, h(async (req, res) => {
     const u = await c.one('SELECT * FROM users WHERE id = $1 FOR UPDATE', [id]);
     if (!u) throw notFound('That person doesn’t exist.');
     const b = req.body, sets = [], vals = [];
+    // .env controls the built-in admin's sign-in; only its name can change here.
+    if (isBuiltinManaged(u) && ((b.email !== undefined && String(b.email).trim().toLowerCase() !== u.email) || (b.role !== undefined && b.role !== 'admin') || b.archived || b.password)) {
+      throw bad('The “admin” login is set up from the server’s .env file. To change or retire it, remove ADMIN_PASSWORD there and restart.');
+    }
     const set = (col, v) => { vals.push(v); sets.push(`${col} = $${vals.length}`); };
     if (b.name !== undefined) set('name', str(b.name, { label: 'Name', required: true, max: 120 }));
-    if (b.email !== undefined) {
+    if (b.email !== undefined && String(b.email).trim().toLowerCase() !== u.email) {
       const e = str(b.email, { label: 'Email', required: true, max: 200 }).toLowerCase();
       if (!emailOk(e)) throw bad('Enter a valid email address.');
       if (await c.one('SELECT 1 FROM users WHERE lower(email) = $1 AND id <> $2', [e, id])) throw conflict('Someone already uses that email.');

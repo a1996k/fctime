@@ -2,8 +2,15 @@ import { env, IS_PRODUCTION } from './env.js';
 import { createApp } from './app.js';
 import { migrate } from './migrate.js';
 import { closePool } from './db.js';
+import { ensureBuiltinAdmin } from './builtin-admin.js';
 
 await migrate({ log: m => console.log(`[db] ${m}`) });
+try {
+  await ensureBuiltinAdmin(m => console.log(`[admin] ${m}`));
+} catch (e) {
+  console.error(`[admin] ${e.message}`);
+  process.exit(1);
+}
 const server = createApp().listen(env.PORT, () => {
   console.log(`FifthColor Time running at http://localhost:${env.PORT}`);
   if (IS_PRODUCTION && !env.COOKIE_SECURE && !process.env.TRUST_PROXY) {

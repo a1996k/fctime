@@ -48,6 +48,7 @@ TRUST_PROXY=1
 | `DATABASE_URL` | Where the database is. |
 | `PORT` | The port the app listens on, behind your HTTPS proxy. Platforms usually set it for you. |
 | `COOKIE_SECURE=1` | The sign-in cookie is only ever sent over HTTPS. The app also sets this flag automatically when it can tell the request came over HTTPS. |
+| `ADMIN_PASSWORD` | Optional. An admin login with the username `admin` and this password, at least 12 characters (see step 4). |
 | `TRUST_PROXY=1` | The app sits behind one proxy (nginx or a platform’s load balancer). It then sees each visitor’s real address, so the sign-in throttle slows down the right person, and it knows the request was HTTPS. Use the number of proxies in front of it. |
 
 Don’t set `DEMO_PASSWORD`, and never run `npm run db:seed` or `npm run db:reset` against the live database. With `NODE_ENV=production` both refuse to run. Without it, the reset still refuses when the database holds anyone other than the demo users.
@@ -105,13 +106,18 @@ The app logs to standard output (`journalctl -u fctime -f`), applies new databas
 
 ## 4. The first admin
 
-On an empty database, create yourself as the first admin from the server:
+Either way gets you a first admin on an empty database.
 
-```bash
-cd /opt/fctime && npm run admin:create -- --email you@fifthcolor.com --name "Your Name"
-```
+- **Admin login from `.env`:** add `ADMIN_PASSWORD=` with a long random password (at least 12 characters) to `.env` and restart. Sign in with the username `admin`. The password follows `.env` at every start, so this login also gets you back in if the others are locked out. Change the password by editing `.env` and restarting; the old sessions are signed out.
+- **A named admin:** from the server, run:
 
-It asks for the password twice without showing it. Some hosting consoles have no interactive terminal; there, put the password in `ADMIN_PASSWORD` for that one command. The same command gets you back in if every admin is locked out: give an existing person’s email, and they become an active admin with the new password.
+  ```bash
+  cd /opt/fctime && npm run admin:create -- --email you@fifthcolor.com --name "Your Name"
+  ```
+
+  It asks for the password twice without showing it. Some hosting consoles have no interactive terminal; there, put the password in `NEW_PASSWORD` for that one command. Given an existing person’s email, it makes them an active admin with the new password.
+
+Everyone knows the username `admin`, so give it a long random password. Once named admins exist, you can remove `ADMIN_PASSWORD` and archive the `admin` account in Settings → People, or keep it as a spare way in.
 
 ## 5. Set up the workspace
 
