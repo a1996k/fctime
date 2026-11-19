@@ -58,7 +58,7 @@ The script drives the real UI in Chromium. To give the timer a realistic duratio
 
 Screenshots: [Home with timer](screenshots/home-timer.png), [calendar drag](screenshots/calendar-drag.png), [notifications](screenshots/notifications.png), [manager approval](screenshots/approvals.png), [report](screenshots/report.png), [import preview](screenshots/import-preview.png). The script saves a full set to `verify-output/`.
 
-## API, import and unit tests: `npm test` (25 tests, all passing)
+## API, import and unit tests: `npm test` (28 tests, all passing)
 
 **`test/flow.test.js`** covers the whole milestone through the API, plus the rules a browser can’t prove:
 
@@ -79,6 +79,7 @@ Screenshots: [Home with timer](screenshots/home-timer.png), [calendar drag](scre
 - **Notifications:** each event reaches the right person once, and people can’t mark others’ notifications read.
 - **People and sign-in:** role and department validation, bill rates hidden from team members, changing your own password, and archiving someone saves their running timer as a draft.
 - **Re-check fixes:** large uploads refused before sign-in, rounded timer entries don't overlap what follows, and failed sign-ins slow an address down without locking out a correct password.
+- **Pre-launch review fixes:** only the exact email signs in; deletes work without a body, as the page sends them; lists where text belongs and uppercase ids are refused.
 
 **`test/import.test.js`** runs the Paymo import against a stand-in Paymo API and a CSV export:
 
@@ -90,6 +91,8 @@ Screenshots: [Home with timer](screenshots/home-timer.png), [calendar drag](scre
 - **Re-runs:** importing again adds only what’s new; a third run has nothing to import.
 - **CSV:** columns are detected; identical rows stay distinct; the same file imported again adds nothing, even after remapping the description column. Imported people can’t sign in until given a password.
 - **Size limit:** a web import over 50,000 entries is refused with directions, and nothing is stored.
+- **Mixed sources:** time imported by CSV is recognized when the API brings it again, and the other way round.
+- **Entry IDs:** an “Entry type” column isn’t taken for one; repeated IDs are reported instead of merged; IDs differing only in case stay apart.
 
 **`test/time.test.js`** covers the duration parser, rounding, Monday weeks and the time helpers.
 
@@ -132,6 +135,28 @@ The re-check also caught issues my fixes had introduced. All are now fixed, with
 | Changing your password left your other sessions signed in | Other sessions end; an admin’s password reset ends all of that person’s sessions |
 
 Still open and in the backlog: a deleted entry’s history has no screen (its events are kept).
+
+### Second independent review, before launch
+
+A fresh review, made without seeing my conclusions, covered the MySQL rewrite, the Paymo import and the pages. It reproduced each finding against a running server. All are fixed, each with a test that fails on the code before the fix:
+
+| Finding | Fix |
+|---|---|
+| **High:** MySQL’s default collation ignores accents and letter widths, so “cásey@” or a full-width “ｃasey@” signed in as Casey, and each spelling got its own 10 tries before the lockout. This came in with the switch to MySQL. | Only the exact address signs in (letter case still doesn’t matter), and failed tries count against the person, however the address is typed |
+| **High:** importing the same time from a CSV and then from the API (or the other way round) added it twice, as approved | Time imported earlier from the other source is matched by person, task, date and minutes, one existing entry for each incoming one |
+| Deleting a time entry or a task in the app always failed: the page sends deletes with no body, and the server wanted JSON. The API tests had sent a body, so they missed it. | Deletes need no body. A browser can’t send a cross-site DELETE without a preflight, so this doesn’t weaken the cross-site request guard. Checked in Chromium too |
+| A CSV column like “Entry type” was taken for the entry ID, so rows sharing a value (“Manual”) were silently merged into one | “Entry type” is no longer matched. If the chosen ID column repeats a value, those rows are listed as problems with the fix, not merged. IDs that differ only in letter case are kept apart (migration 003) |
+| Low: a list where text was expected (`"start": ["09:00"]`) caused a server error | It’s refused as bad input |
+| Low: an uppercase copy of an id was accepted and stored, then failed comparisons later (an assignee lost access to their task) | Ids must be lowercase, as the app creates them |
+
+The review also checked these and found them sound:
+- **SQL injection:** every query is parameterized, including the list expansion and bulk inserts.
+- **Database connections:** each runs at READ COMMITTED, in UTC, in strict mode.
+- **Races:** 12 parallel entries against a 60-minute budget accepted exactly 2, and a simultaneous approve and send-back gave one 200 and one 409.
+- **The earlier review’s fixes:** the frozen routing, stale decisions and self-approval guards all hold on MySQL.
+- **Visibility:** each role sees only what it should, in reports, the CSV export, the task time log, entry history, the team view and timesheets. Bill rates are hidden from team members.
+- **Escaping:** imported and typed text is escaped everywhere it’s shown.
+- **Sessions:** revoked on sign-out, on a password change and on archiving.
 
 ## Known limits
 

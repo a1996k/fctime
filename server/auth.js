@@ -73,9 +73,12 @@ export function requireAdmin(req, _res, next) {
   next();
 }
 
-/** Mutating API calls must be JSON; browsers can’t send cross-site JSON without a CORS preflight, so this blocks CSRF. */
+/**
+ * Writes must be JSON; browsers can’t send cross-site JSON without a CORS preflight, so this blocks CSRF.
+ * DELETE has no body, and a browser can’t send a cross-site DELETE without a preflight either.
+ */
 export function requireJson(req, _res, next) {
-  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) && !req.is('application/json')) {
+  if (['POST', 'PUT', 'PATCH'].includes(req.method) && !req.is('application/json')) {
     return next(new HttpError(415, 'Send requests as JSON.'));
   }
   next();

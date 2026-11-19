@@ -40,7 +40,7 @@ export const CSV_FIELDS = {
   end: { label: 'End time', aliases: ['end', 'end time', 'to', 'stopped', 'finish', 'ended at', 'time end'] },
   duration: { label: 'Duration', aliases: ['duration', 'time', 'hours', 'total time', 'time (h)', 'duration (h)', 'hours (decimal)', 'decimal hours', 'time spent', 'logged time'] },
   billable: { label: 'Billable', aliases: ['billable', 'is billable'] },
-  entryId: { label: 'Entry ID', aliases: ['id', 'entry id', 'time entry id', 'entry'] },
+  entryId: { label: 'Entry ID', aliases: ['id', 'entry id', 'time entry id'] },
 };
 
 /** Best guess at which column holds each field. Exact names win over partial matches. */
@@ -149,8 +149,19 @@ export function normalizeCsv(raw, options = {}) {
       const n = (seen.get(base) || 0) + 1; seen.set(base, n);
       key = 'csv:' + crypto.createHash('sha1').update(`${base}|${n}`).digest('hex');
     }
-    out.entries.push({ key, paymoId: null, taskPid, userPid, date, start: start && end ? start : null, end: start && end ? end : null, minutes, note, line });
+    out.entries.push({ key, paymoId: null, taskPid, userPid, date, start: start && end ? start : null, end: start && end ? end : null, minutes, note, line, entryId: id || null });
   });
+  // An entry ID names one entry. If a value repeats, the column isn't one (an “Entry type” column,
+  // say): keep those rows out and say why, rather than let them collapse into a single entry.
+  const idCount = new Map();
+  for (const e of out.entries) if (e.entryId) idCount.set(e.entryId, (idCount.get(e.entryId) || 0) + 1);
+  if ([...idCount.values()].some(n => n > 1)) {
+    out.entries = out.entries.filter(e => {
+      const n = e.entryId ? idCount.get(e.entryId) : 1;
+      if (n > 1) out.problems.push({ line: e.line, why: `its Entry ID “${e.entryId}” is on ${n} rows. If that column isn’t an entry ID, set Entry ID to “Not in the file”` });
+      return n === 1;
+    });
+  }
   return { users: [...out.users.values()], clients: [...out.clients.values()], projects: [...out.projects.values()], tasklists: [...out.tasklists.values()], tasks: [...out.tasks.values()], entries: out.entries, problems: out.problems, skippedRunning: 0, columns: col, headers };
 }
 const toMin = hm => { const [h, m] = hm.split(':').map(Number); return h * 60 + m; };

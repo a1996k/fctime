@@ -21,7 +21,7 @@ export function roundUp(minutes, step) {
 
 /** 'HH:MM' (or 'HH:MM:SS') to minutes after midnight, or null. */
 export function fromHM(s) {
-  if (!s || !/^\d{1,2}:\d{2}/.test(s)) return null;
+  if (typeof s !== 'string' || !/^\d{1,2}:\d{2}/.test(s)) return null;
   const [a, b] = s.split(':').map(Number);
   if (a > 24 || b > 59 || (a === 24 && b > 0)) return null;
   return a * 60 + b;

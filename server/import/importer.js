@@ -49,6 +49,16 @@ export async function buildPlan(c, data, options = {}) {
   for (const part of chunks(keys, 5000)) {
     for (const r of await c.many('SELECT import_key AS k FROM time_entries WHERE import_key IN ($1)', [part])) existing.add(r.k);
   }
+  // Time imported earlier from the other source (a CSV, then the API at cutover, or the reverse)
+  // shares no key with this run. Count it by person, task, date and minutes instead, so each
+  // existing entry stands in for one incoming entry and the same time doesn't come in twice.
+  const fromApi = new Map(), fromCsv = new Map();
+  const dates = data.entries.map(e => e.date).filter(Boolean).sort();
+  if (dates.length) {
+    const rows = await c.many(`SELECT user_id, task_id, entry_date AS d, minutes, paymo_entry_id IS NOT NULL AS api FROM time_entries
+                                WHERE source = 'import' AND entry_date BETWEEN $1 AND $2`, [dates[0], dates[dates.length - 1]]);
+    for (const r of rows) { const m = r.api ? fromApi : fromCsv, k = `${r.user_id}|${r.task_id}|${r.d}|${r.minutes}`; m.set(k, (m.get(k) || 0) + 1); }
+  }
   const entryStatus = options.entryStatus === 'draft' ? 'draft' : 'approved';
   const extraOpen = Math.max(0, Math.round(+options.extraOpenMinutes || 0));
   const defaultSvc = services.find(s => s.id === options.defaultServiceLineId) || services[0] || null;
@@ -144,6 +154,10 @@ export async function buildPlan(c, data, options = {}) {
     const person = personFor(e.userPid);
     if (person.action === 'skip') { counts.skippedPerson++; continue; }
     const minutes = Math.min(1440, e.minutes);
+    if (t.taskId && person.userId) {
+      const other = e.paymoId != null ? fromCsv : fromApi, k = `${person.userId}|${t.taskId}|${e.date}|${minutes}`;
+      if (other.get(k) > 0) { other.set(k, other.get(k) - 1); counts.already++; continue; }
+    }
     if (minutes < e.minutes) counts.capped++;
     person.entries++; person.minutes += minutes;
     counts.new++; counts.minutes += minutes;

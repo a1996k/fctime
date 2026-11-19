@@ -107,7 +107,7 @@ Settings → **Import from Paymo** (admins only). Nothing is saved until you’v
    - **Task lists** map to service lines using the keywords on each service line (Settings → Service lines).
    - Choose whether old time arrives **approved** (the default, which keeps history out of approval queues) or **not submitted**.
    - The preview also shows warnings: running Paymo timers, entries with no duration, and unreadable rows.
-3. **Import.** It runs in one transaction. Records already in the app are matched and left alone, and only new ones are added, so you can import again later (for example a final top-up at cutover) without duplicates.
+3. **Import.** It runs in one transaction. Records already in the app are matched and left alone, and only new ones are added, so you can import again later (for example a final top-up at cutover) without duplicates. That holds across the two ways in, too: time that came from a CSV is recognized when the API brings it again (by person, task, date and length), and the other way round.
 
 The same import runs from a terminal, which suits a large first migration. It previews by default and writes only with `--commit`. The key comes from an environment variable, so it never lands in your shell history or the app:
 

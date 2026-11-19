@@ -473,6 +473,31 @@ test('10. re-check fixes: upload limit, overlaps with rounding, sign-in slowdown
   assert.ok(Date.now() - t0 >= 250, 'it was slowed down');
 });
 
+test('11. pre-launch review fixes: exact sign-in email, deletes, input types, id case', async () => {
+  // MySQL's collation would let “chrís@” or a full-width “ｃhris@” find Chris, each with its own allowance of tries.
+  // Only the exact address signs in (letter case aside). These come from another address so test 10's count is untouched.
+  const login = (email, password = PW) => fetch(base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': '203.0.113.9' }, body: JSON.stringify({ email, password }) });
+  for (const v of ['chrís@fifthcolor.example', 'ｃhris@fifthcolor.example', 'chris@ﬁfthcolor.example']) assert.equal((await login(v)).status, 400, `${v} is not Chris`);
+  assert.equal((await login('CHRIS@fifthcolor.example')).status, 200, 'letter case still doesn’t matter');
+
+  // The app deletes with no body and no JSON header.
+  const del = (client, path) => fetch(base + '/api' + path, { method: 'DELETE', headers: { Cookie: client.cookie } });
+  const task = ids.T['Portal bug fixes'];
+  const made = ok(await as.riley.post('/entries', { taskId: task, date: addDays(today, -3), duration: '0:15', note: 'to delete' }), 201);
+  assert.equal((await del(as.riley, `/entries/${made.id}`)).status, 200);
+  assert.equal(await one('SELECT id FROM time_entries WHERE id = $1', [made.id]), null, 'the entry is gone');
+  const t = ok(await as.morgan.post('/tasks', { projectId: ids.P['nw-ret'], title: 'Delete me', serviceLineId: ids.S.creative, assigneeId: ids.U.casey, dueDate: today, budget: '1' }), 201);
+
+  // Ids are lowercase, as the app makes them; an uppercase copy would fail later text comparisons.
+  assert.equal((await as.alex.patch(`/tasks/${t.id}`, { assigneeId: ids.U.chris.toUpperCase() })).status, 400);
+  assert.equal((await as.riley.get(`/entries?user=${ids.U.riley.toUpperCase()}&from=${today}&to=${today}`)).status, 400);
+  assert.equal((await del(as.morgan, `/tasks/${t.id}`)).status, 200);
+
+  // Lists where text is expected are bad input, not server errors.
+  assert.equal((await as.riley.post('/entries', { taskId: task, date: today, start: ['09:00'], end: '10:00' })).status, 400);
+  assert.equal((await as.riley.get(`/entries/overlaps?date=${today}&start=09:00&start=10:00&end=11:00`)).status, 400);
+});
+
 function addMin(hm, n) { const [h, m] = hm.split(':').map(Number), t = h * 60 + m + n; return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`; }
 function addDays(iso, n) { const [y, m, d] = iso.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10); }
 function parseCsvLine(l) {

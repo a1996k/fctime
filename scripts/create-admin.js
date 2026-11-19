@@ -40,7 +40,9 @@ if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 200) await die('
 if (name.length > 120) await die('That name is too long (max 120 characters).');
 
 await migrate({ log: () => {} }); // a brand-new database gets its tables first
-const existing = await one('SELECT id, name, role, archived_at FROM users WHERE lower(email) = $1', [email]);
+const found = await one('SELECT id, name, email, role, archived_at FROM users WHERE lower(email) = $1', [email]);
+const existing = found && found.email.toLowerCase() === email ? found : null; // exact address only
+if (found && !existing) await die(`That address is too close to ${found.email}, which is already in use.`);
 if (!existing && !name) await die('Nobody uses that email yet. Give their name too: --name "Your Name"');
 
 let password = process.env.ADMIN_PASSWORD || '';

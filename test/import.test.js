@@ -241,3 +241,41 @@ test('web import size limit: big batches are refused with a way forward', async 
   const runs = ok(await admin.req('GET', '/import/runs'));
   assert.ok(!runs.some(x => x.label === 'CSV: too-big.csv'));
 });
+
+test('the same time imported from a CSV and from the API comes in once', async () => {
+  const head = CSV.split('\r\n')[0];
+  // November came in through the API above, so the same entries in a CSV are already here.
+  const same = [head,
+    '11/10/2026,Dana Fox,dana@fifthcolor.example,Lakeside Brewing,Website 2026,Development,Homepage build,Hero section,9:00 AM,11:30 AM,2:30',
+    '11/11/2026,Dana Fox,dana@fifthcolor.example,Lakeside Brewing,Website 2026,Development,Homepage build,Nav,,,1:30'].join('\r\n');
+  const a = ok(await admin.req('POST', '/import/paymo/csv', { filename: 'same.csv', text: same }), 201);
+  assert.equal(a.entries.new, 0); assert.equal(a.entries.already, 2);
+  ok(await admin.req('POST', `/import/runs/${a.id}/discard`, {}));
+  // The other way round: June 2025 arrives by CSV first, then the API fetch finds it already here.
+  const june = [head, '06/01/2025,Dana Fox,dana@fifthcolor.example,Lakeside Brewing,Website 2026,Development,Homepage build,out of range,,,1:00'].join('\r\n');
+  const b = ok(await admin.req('POST', '/import/paymo/csv', { filename: 'june.csv', text: june }), 201);
+  assert.equal(b.entries.new, 1);
+  ok(await admin.req('POST', `/import/runs/${b.id}/commit`, {}));
+  const c = ok(await admin.req('POST', '/import/paymo/fetch', { apiKey: KEY, from: '2025-06-01', to: '2025-06-30' }), 201);
+  assert.equal(c.entries.new, 0); assert.equal(c.entries.already, 1);
+  ok(await admin.req('POST', `/import/runs/${c.id}/discard`, {}));
+  assert.equal((await one(`SELECT COUNT(*) AS n FROM time_entries WHERE entry_date = '2025-06-01'`)).n, 1);
+});
+
+test('CSV entry IDs: “Entry type” isn’t one, repeated IDs are reported, letter case counts', async () => {
+  const row = (task, type) => `11/18/2026,Casey Diaz,casey@fifthcolor.example,Northwind Coffee,Retainer,${task},${type},0:15`;
+  const types = ['Date,User,Email,Client,Project,Task,Entry type,Duration', row('Type test', 'Manual'), row('Type test', 'Timer'), row('Type test', 'Manual'), row('Type test', 'Timer')].join('\r\n');
+  const pv = ok(await admin.req('POST', '/import/paymo/csv', { filename: 'types.csv', text: types }), 201);
+  assert.equal(pv.csv.columns.entryId, -1, '“Entry type” isn’t taken for an entry ID');
+  assert.equal(pv.entries.new, 4);
+  // Choosing a column whose values repeat keeps those rows out, and says why, instead of merging them.
+  const remap = ok(await admin.req('PATCH', `/import/runs/${pv.id}`, { columns: { ...pv.csv.columns, entryId: 6 } }));
+  assert.equal(remap.entries.new, 0);
+  assert.ok(remap.problems.some(p => /Entry ID “Manual” is on 2 rows/.test(p.why)), JSON.stringify(remap.problems));
+  ok(await admin.req('POST', `/import/runs/${pv.id}/discard`, {}));
+  // IDs that differ only in letter case are two entries.
+  const cased = ['Date,User,Email,Client,Project,Task,ID,Duration', row('Case test', 'ab12'), row('Case test', 'AB12')].join('\r\n');
+  const pc = ok(await admin.req('POST', '/import/paymo/csv', { filename: 'cased.csv', text: cased }), 201);
+  assert.equal(pc.entries.new, 2);
+  assert.equal(ok(await admin.req('POST', `/import/runs/${pc.id}/commit`, {})).entriesImported, 2, 'both rows came in');
+});

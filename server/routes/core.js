@@ -18,10 +18,13 @@ const DUMMY_HASH = hashPassword('not-a-real-password');
 r.post('/auth/login', h(async (req, res) => {
   const email = str(req.body.email, { label: 'Email', max: 200 }).toLowerCase();
   const password = String(req.body.password || '');
-  const key = `${req.ip}|${email}`, ipKey = `ip|${req.ip}`;
+  // MySQL's collation ignores accents and letter widths, so “cásey@” would find casey@. Only the exact
+  // address counts, and failures are counted against the person, however the address is typed.
+  const found = await one('SELECT id, email, password_hash, archived_at FROM users WHERE lower(email) = $1', [email]);
+  const u = found && found.email.toLowerCase() === email ? found : null;
+  const key = `${req.ip}|${u ? u.id : email}`, ipKey = `ip|${req.ip}`;
   checkThrottle(key);
   await slowDown(ipKey); // one password tried across many emails slows to a crawl
-  const u = await one('SELECT id, password_hash, archived_at FROM users WHERE lower(email) = $1', [email]);
   const okPw = await verifyPassword(password, u && u.password_hash ? u.password_hash : await DUMMY_HASH);
   if (!u || u.archived_at || !u.password_hash || !okPw) {
     recordFailure(key); recordFailure(ipKey);

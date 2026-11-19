@@ -10,7 +10,8 @@ export const conflict = (msg, extra) => new HttpError(409, msg, extra);
 /** Wrap an async route handler so thrown errors reach the error middleware. */
 export const h = fn => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
-export const isUUID = s => typeof s === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
+// Lowercase only, as the app and MySQL create them: ids are compared as text in JavaScript too.
+export const isUUID = s => typeof s === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(s);
 export function uuidParam(v, label = 'id') { if (!isUUID(v)) throw bad(`Invalid ${label}.`); return v; }
 export function str(v, { label, max = 500, required = false } = {}) {
   const s = typeof v === 'string' ? v.trim() : v == null ? '' : String(v).trim();
