@@ -4,6 +4,7 @@
 import crypto from 'node:crypto';
 import { normalizeCsv, CSV_FIELDS } from './csv.js';
 import { normalizePaymo } from './paymo.js';
+import { addDays } from '../../public/js/shared/time.js';
 
 const lower = s => String(s || '').trim().toLowerCase();
 const PALETTE = ['#E8590C', '#1971C2', '#2B8A3E', '#7048E8', '#C2255C', '#0C8599', '#E67700', '#495057'];
@@ -15,6 +16,25 @@ function* chunks(list, size) { for (let i = 0; i < list.length; i += size) yield
 async function linkPaymoId(c, table, column, paymoId, id) {
   if (await c.one(`SELECT 1 FROM ${table} WHERE ${column} = $1`, [paymoId])) return 0;
   return (await c.query(`UPDATE ${table} SET ${column} = $1 WHERE id = $2 AND ${column} IS NULL`, [paymoId, id])).rowCount;
+}
+
+/**
+ * Date ranges that cover from..to and split these entry dates into parts of at most `max` entries,
+ * with some room to spare. Used to tell an admin where to split a fetch that's too big for one import.
+ */
+export function splitRanges(dates, from, to, max) {
+  const sorted = dates.filter(Boolean).sort();
+  const parts = Math.max(1, Math.ceil(sorted.length / Math.floor(max * 0.9)));
+  const out = [];
+  let start = from;
+  for (let i = 1; i < parts; i++) {
+    const cut = sorted[Math.floor((sorted.length * i) / parts)];
+    if (!cut || cut <= start || cut > to) continue;
+    out.push([start, addDays(cut, -1)]);
+    start = cut;
+  }
+  out.push([start, to]);
+  return out;
 }
 
 export function normalizeRun(run, settings) {

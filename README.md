@@ -111,7 +111,7 @@ Settings → **Import from Paymo** (admins only). Nothing is saved until you’v
 1. **Bring the data in**, one of two ways:
    - **API key** (recommended): in Paymo, open My Account and create an API key, paste it, and choose the dates to bring over. The key is used for that fetch only and is never stored. The server must be able to reach `app.paymoapp.com`.
    - **CSV export**: export time entries from a Paymo report, one row per entry, and upload the file. Columns are matched by name (date, person or user, email, client, project, task list, task, description, start and end time, duration, billable). You can fix the mapping and the date format on the preview.
-   - One web import takes up to 50,000 entries, about a year and a half for 30 people. Bring longer histories over a year at a time, or use the command line below.
+   - One web import takes up to 50,000 entries. If your dates hold more, the app says exactly how to split them (for example two halves of the year), or use the command line below.
 2. **Review the preview:**
    - **People** are matched by Paymo id, then email, then name. For each person you can match them to someone else, add them as a new Team Member, or skip their time.
    - **Task lists** map to service lines using the keywords on each service line (Settings → Service lines).

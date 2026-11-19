@@ -131,7 +131,7 @@ Sign in, then in this order:
 ## 6. Bring Paymo history over
 
 1. Import a short range first, such as last month, and compare the preview’s people, task-list mapping and hours with Paymo.
-2. Bring the rest over. In the web app (Settings → Import from Paymo), one import takes up to 50,000 entries, about a year and a half for 30 people, so go a year at a time. From the server’s terminal there’s no limit, which suits a large first migration: `PAYMO_API_KEY=… npm run import:paymo -- --from 2022-01-01 --to 2026-11-30 --as you@fifthcolor.com`, then again with `--commit`. Five years for 30 people took 25 seconds in testing.
+2. Bring the rest over. In the web app (Settings → Import from Paymo), one import takes up to 50,000 entries. If the dates you choose hold more, it tells you exactly how to split them into parts that fit. From the server’s terminal there’s no limit, which suits a large first migration: `PAYMO_API_KEY=… npm run import:paymo -- --from 2022-01-01 --to 2026-11-30 --as you@fifthcolor.com`, then again with `--commit`. Five years for 30 people took 25 seconds in testing.
 3. Run a pilot: a few people log a week, submit it, and take it through both approvals. Check the Time Reports total against what you expect.
 4. At cutover, import once more to top up the time logged in Paymo since; nothing is duplicated. Then everyone switches.
 

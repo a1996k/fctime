@@ -31,7 +31,7 @@ Run before going live, against a production-mode server (`NODE_ENV=production`) 
 | What | Result |
 |---|---|
 | Import from the command line (preview, then `--commit`) | 2.6 s to preview, 25 s to import, in one transaction |
-| Same file through the web import | Works (3.6 s to preview), but the server reached about 1 GB of memory, so a single web import is now capped at 50,000 entries, with a message pointing to smaller date ranges or the command line |
+| Same file through the web import | Works (3.6 s to preview), but the server reached about 1 GB of memory, so a single web import is now capped at 50,000 entries. Over the cap, the message names date ranges that fit (checked with a stand-in Paymo returning 51,000 entries) and points to the command line |
 | Page load (the bootstrap call every page makes, and every save repeats) | 0.65 s at first; **0.13 s** after adding an index so task totals come from the index alone (migration 002) |
 | Timesheet week, approvals queue, team week, notifications, a task’s time log | 2–25 ms each |
 | Report for one month, admin | 0.07 s |
@@ -63,7 +63,7 @@ The script drives the real UI in Chromium. To give the timer a realistic duratio
 
 Screenshots: [Home with timer](screenshots/home-timer.png), [calendar drag](screenshots/calendar-drag.png), [notifications](screenshots/notifications.png), [manager approval](screenshots/approvals.png), [report](screenshots/report.png), [import preview](screenshots/import-preview.png). The script saves a full set to `verify-output/`.
 
-## API, import and unit tests: `npm test` (29 tests, all passing)
+## API, import and unit tests: `npm test` (30 tests, all passing)
 
 **`test/flow.test.js`** covers the whole milestone through the API, plus the rules a browser can’t prove:
 
@@ -96,7 +96,7 @@ Screenshots: [Home with timer](screenshots/home-timer.png), [calendar drag](scre
 - **Conversion:** UTC times land in Chicago time, and HTML is stripped from descriptions.
 - **Re-runs:** importing again adds only what’s new; a third run has nothing to import.
 - **CSV:** columns are detected; identical rows stay distinct; the same file imported again adds nothing, even after remapping the description column. Imported people can’t sign in until given a password.
-- **Size limit:** a web import over 50,000 entries is refused with directions, and nothing is stored.
+- **Size limit:** a web import over 50,000 entries is refused, nothing is stored, and the message suggests date ranges that fit, back to back with no gap.
 - **Mixed sources:** time imported by CSV is recognized when the API brings it again, and the other way round.
 - **Entry IDs:** an “Entry type” column isn’t taken for one; repeated IDs are reported instead of merged; IDs differing only in case stay apart.
 

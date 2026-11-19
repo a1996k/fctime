@@ -9,6 +9,8 @@ const { seedDemo } = await import('../server/seed.js');
 const { createApp } = await import('../server/app.js');
 const { one, many, closePool } = await import('../server/db.js');
 const { parseDurationCell, parseDateCell, parseTimeCell, detectColumns } = await import('../server/import/csv.js');
+const { splitRanges } = await import('../server/import/importer.js');
+const { addDays } = await import('../public/js/shared/time.js');
 
 const PW = 'test-password-1', KEY = 'goodkey123456';
 let app, paymo, base, ids, admin, member;
@@ -278,4 +280,16 @@ test('CSV entry IDs: “Entry type” isn’t one, repeated IDs are reported, le
   const pc = ok(await admin.req('POST', '/import/paymo/csv', { filename: 'cased.csv', text: cased }), 201);
   assert.equal(pc.entries.new, 2);
   assert.equal(ok(await admin.req('POST', `/import/runs/${pc.id}/commit`, {})).entriesImported, 2, 'both rows came in');
+});
+
+test('a fetch too big for one import is split into date ranges that fit', () => {
+  // 51,000 entries over 255 days, like a busy year so far: two parts, back to back, each under the limit.
+  const dates = Array.from({ length: 51000 }, (_, i) => addDays('2026-01-01', Math.floor(i / 200)));
+  const parts = splitRanges(dates, '2026-01-01', '2026-11-19', 50000);
+  assert.equal(parts.length, 2);
+  assert.equal(parts[0][0], '2026-01-01'); assert.equal(parts[1][1], '2026-11-19');
+  assert.equal(addDays(parts[0][1], 1), parts[1][0], 'no gap and no overlap');
+  for (const [a, b] of parts) assert.ok(dates.filter(d => d >= a && d <= b).length <= 50000);
+  assert.equal(splitRanges(Array.from({ length: 130000 }, (_, i) => addDays('2022-01-01', Math.floor(i / 75))), '2022-01-01', '2026-11-19', 50000).length, 3);
+  assert.deepEqual(splitRanges(['2026-03-01'], '2026-01-01', '2026-11-19', 50000), [['2026-01-01', '2026-11-19']]);
 });
