@@ -229,3 +229,15 @@ test('CSV import: columns, matching, duplicates and re-import', async () => {
   assert.equal(remap.entries.new, 0);
   assert.equal(remap.entries.already, 4);
 });
+
+test('web import size limit: big batches are refused with a way forward', async () => {
+  const row = '11/16/2026,Casey Diaz,casey@fifthcolor.example,Northwind Coffee,Retainer,Design,Big file,,,,0:15';
+  const big = [CSV.split('\r\n')[0], ...Array(50001).fill(row)].join('\r\n');
+  const r = await admin.req('POST', '/import/paymo/csv', { filename: 'too-big.csv', text: big });
+  assert.equal(r.status, 400);
+  assert.match(r.data.error, /50,001 time entries/);
+  assert.match(r.data.error, /npm run import:paymo/);
+  // nothing was stored
+  const runs = ok(await admin.req('GET', '/import/runs'));
+  assert.ok(!runs.some(x => x.label === 'CSV: too-big.csv'));
+});

@@ -8,6 +8,7 @@ An internal web app for tracking time against FifthColor client work. Navigation
 - [Requirements map](docs/requirements-map.md): each workflow traced to its wireframe screen or function, with the rules and the assumptions made.
 - [Backlog](docs/backlog.md): the remaining wireframe features, with simulated integrations flagged for decisions.
 - [Verification](docs/verification.md): what was tested, the review findings, and the results.
+- [Going live](docs/deployment.md): hosting, configuration, the first admin, bringing Paymo history over, backups and upgrades.
 
 ## Stack
 
@@ -57,8 +58,9 @@ Open http://localhost:3000. `npm run dev` restarts the server whenever files cha
 
 | Command | What it does |
 |---|---|
-| `npm run db:reset` | Drops every table in `DATABASE_URL`, migrates, and loads the demo data |
+| `npm run db:reset` | Drops every table in `DATABASE_URL`, migrates, and loads the demo data. Refuses with `NODE_ENV=production`, or when the database holds anyone other than the demo users |
 | `npm run db:migrate` | Applies new migrations only |
+| `npm run admin:create -- --email … --name "…"` | Creates the first admin on an empty database, or makes an existing person an admin with a new password ([Going live](docs/deployment.md)) |
 | `npm test` | API, import and unit tests against `TEST_DATABASE_URL` (default `fctime_test`, which is wiped) |
 | `npm run verify:ui` | Walks through the whole flow in Chromium, including a Paymo import against a stand-in Paymo server, and saves screenshots to `verify-output/` (needs Playwright; see below) |
 
@@ -73,11 +75,11 @@ npm i -D playwright && npx playwright install chromium
 - `DATABASE_URL` looks like `mysql://user:password@host:3306/fctime`.
 - Times are stored in UTC. The app sets each connection to UTC and does the workspace time zone math itself, so MySQL’s time zone tables aren’t needed.
 - There are no triggers, stored procedures or events, so the app’s database user needs only ordinary table privileges. That works with binary logging on and on managed MySQL services.
-- A Paymo import keeps a copy of the fetched data or uploaded file until you import or discard it. A 200,000-row CSV takes about 22 MB, which fits within MySQL 8’s default `max_allowed_packet` of 64 MB. If your server sets it lower, raise it for large imports.
+- A web Paymo import keeps a copy of the fetched data or uploaded file until you import or discard it. One web import takes up to 50,000 entries (about 6 MB stored), well within MySQL 8’s default `max_allowed_packet` of 64 MB. The command-line import has no limit and stores no copy.
 
 ## Demo sign-in
 
-Every demo user’s password is `fifthcolor-demo` (set `DEMO_PASSWORD` in `.env` before seeding to change it). People, clients and tasks come from the wireframe’s sample data, with dates moved to the current weeks.
+Every demo user’s password is `fifthcolor-demo` (set `DEMO_PASSWORD` in `.env` before seeding to change it). Demo data is for development only: with `NODE_ENV=production` the seed refuses to run. People, clients and tasks come from the wireframe’s sample data, with dates moved to the current weeks.
 
 | Person | Email | Role | Why sign in as them |
 |---|---|---|---|
@@ -99,6 +101,7 @@ Settings → **Import from Paymo** (admins only). Nothing is saved until you’v
 1. **Bring the data in**, one of two ways:
    - **API key** (recommended): in Paymo, open My Account and create an API key, paste it, and choose the dates to bring over. The key is used for that fetch only and is never stored. The server must be able to reach `app.paymoapp.com`.
    - **CSV export**: export time entries from a Paymo report, one row per entry, and upload the file. Columns are matched by name (date, person or user, email, client, project, task list, task, description, start and end time, duration, billable). You can fix the mapping and the date format on the preview.
+   - One web import takes up to 50,000 entries, about a year and a half for 30 people. Bring longer histories over a year at a time, or use the command line below.
 2. **Review the preview:**
    - **People** are matched by Paymo id, then email, then name. For each person you can match them to someone else, add them as a new Team Member, or skip their time.
    - **Task lists** map to service lines using the keywords on each service line (Settings → Service lines).

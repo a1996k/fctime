@@ -28,7 +28,7 @@ r.post('/auth/login', h(async (req, res) => {
     throw bad('That email and password don’t match.');
   }
   clearLoginThrottle(key);
-  await createSession(res, u.id);
+  await createSession(req, res, u.id);
   res.json({ ok: true });
 }));
 r.post('/auth/logout', h(async (req, res) => { await destroySession(req, res); res.json({ ok: true }); }));

@@ -13,6 +13,11 @@ import { normalizeRun, buildPlan, previewOf, commitPlan } from '../import/import
 
 const r = Router();
 r.use('/import', requireAdmin);
+// One web import holds the whole batch in the live server's memory (5 years for 30 people, about
+// 137,000 entries, peaked near 1 GB). Bigger batches go in smaller date ranges or through the
+// command-line import, which runs in its own process and has no limit.
+const WEB_MAX_ENTRIES = 50000;
+const tooBig = n => bad(`That’s ${n.toLocaleString('en-US')} time entries. The web import takes up to ${WEB_MAX_ENTRIES.toLocaleString('en-US')} at a time, so the live server stays responsive. Bring the history over a year or so at a time, or use the command-line import (npm run import:paymo), which has no limit.`);
 const db = { query, one, many };
 const RUN_COLS = 'id, source, status, label, options, raw, summary, created_at, imported_at';
 // The copy of Paymo's data is kept as text (a large CSV outgrows MySQL's JSON limits); parse it on the way out.
@@ -45,6 +50,7 @@ r.post('/import/paymo/fetch', h(async (req, res) => {
   if (!isISODate(from) || !isISODate(to) || to < from) throw bad('Choose the dates to bring over.');
   if (from < addDays(to, -366 * 3)) throw bad('Bring over three years at most in one go.');
   const raw = await fetchPaymo({ apiKey: String(apiKey || '').trim(), from, to });
+  if ((raw.entries || []).length > WEB_MAX_ENTRIES) throw tooBig(raw.entries.length);
   const run = await createRun('paymo-api', `Paymo ${raw.account ? `(${raw.account}) ` : ''}${from} to ${to}`, raw, req.user.id);
   res.status(201).json(await preview(run));
 }));
@@ -54,7 +60,7 @@ r.post('/import/paymo/csv', h(async (req, res) => {
   if (!text.trim()) throw bad('Choose a CSV file, or paste its text.');
   const rows = parseCSV(text);
   if (rows.length < 2) throw bad('The file needs a header row and at least one entry.');
-  if (rows.length > 200001) throw bad('Split the file: it has more than 200,000 rows.');
+  if (rows.length - 1 > WEB_MAX_ENTRIES) throw tooBig(rows.length - 1);
   const name = str(req.body.filename, { label: 'File name', max: 200 }) || 'pasted text';
   const run = await createRun('paymo-csv', `CSV: ${name}`, { rows }, req.user.id);
   res.status(201).json(await preview(run));

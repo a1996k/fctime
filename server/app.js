@@ -1,5 +1,6 @@
 import path from 'node:path';
 import express from 'express';
+import compression from 'compression';
 import { ROOT } from './env.js';
 import { loadUser, requireJson } from './auth.js';
 import { HttpError } from './http.js';
@@ -9,6 +10,12 @@ import time from './routes/time.js';
 import reports from './routes/reports.js';
 import notifications from './routes/notifications.js';
 import importer from './routes/import.js';
+
+const CSP = [
+  "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' https://fonts.gstatic.com", "img-src 'self' data:", "connect-src 'self'",
+  "object-src 'none'", "base-uri 'self'", "form-action 'self'", "frame-ancestors 'none'",
+].join('; ');
 
 export function createApp() {
   const app = express();
@@ -20,8 +27,14 @@ export function createApp() {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'same-origin');
     res.setHeader('X-Frame-Options', 'DENY');
+    // Only the app's own scripts run; styles and fonts also come from Google Fonts (Inter).
+    res.setHeader('Content-Security-Policy', CSP);
+    // Over HTTPS, tell browsers to keep using it. Subdomains are left alone; they may be other sites.
+    if (req.secure) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
     next();
   });
+  // Gzip responses: a year's report is mostly repeated names, so it shrinks to a fraction on the wire.
+  app.use(compression());
   app.get('/healthz', (_req, res) => res.json({ ok: true }));
 
   const api = express.Router();

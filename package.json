@@ -13,11 +13,13 @@
     "db:migrate": "node scripts/migrate.js",
     "db:seed": "node scripts/seed.js",
     "db:reset": "node scripts/migrate.js --reset && node scripts/seed.js",
+    "admin:create": "node scripts/create-admin.js",
     "test": "node --test --test-concurrency=1 test/*.test.js",
     "verify:ui": "node scripts/verify-ui.js",
     "import:paymo": "node scripts/import-paymo.js"
   },
   "dependencies": {
+    "compression": "^1.8.2",
     "express": "^5.3.0",
     "mysql2": "^3.24.6"
   }

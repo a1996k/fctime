@@ -30,21 +30,23 @@ function readCookie(req, name) {
   }
   return null;
 }
-function setCookie(res, value, maxAgeSec) {
+/** Secure whenever the request came over HTTPS (directly, or through a trusted proxy), or COOKIE_SECURE=1 says so. */
+function setCookie(req, res, value, maxAgeSec) {
   const bits = [`${COOKIE}=${encodeURIComponent(value)}`, 'Path=/', 'HttpOnly', 'SameSite=Lax', `Max-Age=${maxAgeSec}`];
-  if (env.COOKIE_SECURE) bits.push('Secure');
+  if (env.COOKIE_SECURE || req.secure) bits.push('Secure');
   res.setHeader('Set-Cookie', bits.join('; '));
 }
 
-export async function createSession(res, userId) {
+export async function createSession(req, res, userId) {
   const token = crypto.randomBytes(32).toString('base64url');
+  await query('DELETE FROM sessions WHERE expires_at < UTC_TIMESTAMP(6)'); // housekeeping: expired sessions
   await query(`INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, UTC_TIMESTAMP(6) + INTERVAL ${SESSION_DAYS} DAY)`, [sha(token), userId]);
-  setCookie(res, token, SESSION_DAYS * 86400);
+  setCookie(req, res, token, SESSION_DAYS * 86400);
 }
 export async function destroySession(req, res) {
   const t = readCookie(req, COOKIE);
   if (t) await query('DELETE FROM sessions WHERE token_hash = $1', [sha(t)]);
-  setCookie(res, '', 0);
+  setCookie(req, res, '', 0);
 }
 
 /** Attach req.user when the session cookie is valid. */

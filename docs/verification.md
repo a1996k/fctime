@@ -7,7 +7,31 @@ Run on 2026-11-19 against MySQL 8.0.46 and Node 22, workspace time zone America/
 The app first ran on PostgreSQL 16; it now runs on MySQL 8 to match FifthColor’s other applications. Both suites passed on PostgreSQL before the switch and pass on MySQL after it, with the same checks.
 - **No triggers.** The entry snapshot (service line and billable flag) is now kept in step by the app, in the same transaction as each change. New checks prove that unsubmitted time follows task edits and that sent-back time picks up the task’s current service line.
 - **Time zones.** Timestamps are stored in UTC, and workspace dates are worked out in Node. MySQL’s time zone tables aren’t needed.
-- **Large imports.** A 200,000-row Paymo CSV is about 22 MB once stored. It saved in under a second, within MySQL 8’s default `max_allowed_packet` of 64 MB.
+- **Large imports.** A 200,000-row Paymo CSV is about 22 MB once stored. It saved in under a second, within MySQL 8’s default `max_allowed_packet` of 64 MB. (A single web import is now capped at 50,000 entries; see the pre-launch checks.)
+
+## Pre-launch checks
+
+Run before going live, against a production-mode server (`NODE_ENV=production`) on an empty database, and against a large copy of history.
+
+**Production setup**
+- `npm run admin:create` creates the first admin on an empty database, both by the hidden password prompt and with `ADMIN_PASSWORD`. It refuses short or mismatched passwords and a missing name, and given an existing email it restores that person as an admin and signs out their old sessions.
+- The demo seed refuses to run with `NODE_ENV=production`, and on any database that already has people. `db:reset` refuses with `NODE_ENV=production`, and when the database holds anyone but the demo users (unless `--force`). With `NODE_ENV=production` the app won’t start without `DATABASE_URL`.
+- Signed in over HTTPS (through a trusted proxy), the session cookie is `Secure` and responses carry `Strict-Transport-Security`. Every response has a Content-Security-Policy that allows only the app’s own scripts. The browser walk-through below runs under it with no errors.
+- A new admin on an empty workspace can open every page with no browser errors.
+- On a restart (`SIGTERM`), the server finishes the requests in flight and closes the database pool.
+- `npm audit`: no known vulnerabilities in the dependencies.
+
+**Load test:** a generated Paymo export with five years of weekday time for 30 people. That’s 137,264 entries across 60 clients, 172 projects and 1,096 tasks, about the most the app should see.
+
+| What | Result |
+|---|---|
+| Import from the command line (preview, then `--commit`) | 2.6 s to preview, 25 s to import, in one transaction |
+| Same file through the web import | Works (3.6 s to preview), but the server reached about 1 GB of memory, so a single web import is now capped at 50,000 entries, with a message pointing to smaller date ranges or the command line |
+| Page load (the bootstrap call every page makes, and every save repeats) | 0.65 s at first; **0.13 s** after adding an index so task totals come from the index alone (migration 002) |
+| Timesheet week, approvals queue, team week, notifications, a task’s time log | 2–25 ms each |
+| Report for one month, admin | 0.07 s |
+| Report for the year so far (about 27,000 entries), admin | 0.85 s on the server; in Chromium, totals drawn 0.8 s after choosing “This year”. The page now receives only the fields it shows, and responses are gzipped: 23.6 MB became **0.4 MB** on the wire |
+| CSV for a full year | 0.73 s |
 
 ## Browser walk-through: `npm run verify:ui` (21 checks, all passing)
 
@@ -34,7 +58,7 @@ The script drives the real UI in Chromium. To give the timer a realistic duratio
 
 Screenshots: [Home with timer](screenshots/home-timer.png), [calendar drag](screenshots/calendar-drag.png), [notifications](screenshots/notifications.png), [manager approval](screenshots/approvals.png), [report](screenshots/report.png), [import preview](screenshots/import-preview.png). The script saves a full set to `verify-output/`.
 
-## API, import and unit tests: `npm test` (24 tests, all passing)
+## API, import and unit tests: `npm test` (25 tests, all passing)
 
 **`test/flow.test.js`** covers the whole milestone through the API, plus the rules a browser can’t prove:
 
@@ -65,6 +89,7 @@ Screenshots: [Home with timer](screenshots/home-timer.png), [calendar drag](scre
 - **Conversion:** UTC times land in Chicago time, and HTML is stripped from descriptions.
 - **Re-runs:** importing again adds only what’s new; a third run has nothing to import.
 - **CSV:** columns are detected; identical rows stay distinct; the same file imported again adds nothing, even after remapping the description column. Imported people can’t sign in until given a password.
+- **Size limit:** a web import over 50,000 entries is refused with directions, and nothing is stored.
 
 **`test/time.test.js`** covers the duration parser, rounding, Monday weeks and the time helpers.
 

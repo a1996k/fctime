@@ -58,9 +58,18 @@ r.get('/reports/time', h(async (req, res) => {
   res.json({
     filters: f, totals: totals(rows), showValue, people,
     scope: isAdmin(req.user) ? 'all' : isMgr(req.user) ? 'manager' : 'member',
-    entries: rows.map(e => { const o = { ...e }; if (!showValue) delete o.rate; return o; }),
+    // Only what the report page groups and shows; the approval details stay out of a long range's payload.
+    entries: rows.map(e => {
+      const o = {};
+      for (const k of REPORT_FIELDS) o[k] = e[k];
+      if (showValue) o.rate = e.rate;
+      return o;
+    }),
   });
 }));
+
+const REPORT_FIELDS = ['date', 'minutes', 'billable', 'status', 'note', 'user_id', 'user_name', 'task_id', 'task_title',
+  'project_id', 'project_name', 'client_id', 'client_name', 'client_color', 'service_line_id', 'service_line_name', 'service_line_color'];
 
 const csvCell = v => { const s = v == null ? '' : String(v); return /[",\r\n]/.test(s) || /^[=+\-@\t]/.test(s) ? `"${(/^[=+\-@\t]/.test(s) ? "'" : '') + s.replace(/"/g, '""')}"` : s; };
 

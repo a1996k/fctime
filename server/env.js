@@ -15,6 +15,12 @@ if (fs.existsSync(file)) {
   }
 }
 export const ROOT = root;
+export const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+// A live server must say which database to use rather than fall back to the local development one.
+if (IS_PRODUCTION && !process.env.DATABASE_URL) {
+  console.error('DATABASE_URL is not set. With NODE_ENV=production it is required (mysql://user:password@host:3306/fctime).');
+  process.exit(1);
+}
 export const env = {
   DATABASE_URL: process.env.DATABASE_URL || 'mysql://fctime:fctime@localhost:3306/fctime',
   PORT: +(process.env.PORT || 3000),
